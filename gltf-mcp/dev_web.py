@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 NPM = "npm.cmd" if os.name == "nt" else "npm"
+_VITE_LOCAL = ROOT / "node_modules" / ".bin" / ("vite.cmd" if os.name == "nt" else "vite")
 
 
 def stop_process_tree(proc: subprocess.Popen, timeout: float = 6.0) -> None:
@@ -103,6 +104,13 @@ def main() -> int:
         help="仅使用系统默认浏览器打开 http URL，不尝试 cursor:// Simple Browser",
     )
     args = ap.parse_args()
+
+    if not _VITE_LOCAL.is_file():
+        print(
+            "未找到本地 Vite（缺少 node_modules）。请先在 gltf-mcp 目录执行：npm install",
+            file=sys.stderr,
+        )
+        return 1
 
     env = os.environ.copy()
     env.setdefault("GLTF_MCP_BRIDGE_TOKEN", "dev-gltf-mcp-token")
