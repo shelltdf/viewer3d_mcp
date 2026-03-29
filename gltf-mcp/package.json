@@ -1,0 +1,61 @@
+{
+  "name": "gltf-mcp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GLTF viewer with Vue, MCP bridge, and optional Electron shell",
+  "type": "module",
+  "author": "gltf-mcp",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "mcp": "node mcp/index.mjs",
+    "start": "node bridge/server.mjs",
+    "electron:dev": "cross-env GLTF_MCP_ELECTRON_DEV=1 electron .",
+    "electron:dist": "npm run build && electron-builder --config.electronDist=node_modules/electron/dist --win zip --x64"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.2",
+    "three": "^0.174.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.8.1",
+    "vite": "^6.2.1",
+    "vitest": "^3.0.9"
+  },
+  "build": {
+    "appId": "com.gltf-mcp.viewer",
+    "productName": "gltf-mcp",
+    "directories": {
+      "output": "electron-release"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "bridge/**/*.mjs",
+      "bridge/**/*.cjs",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  }
+}

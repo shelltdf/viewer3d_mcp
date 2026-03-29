@@ -1,0 +1,36 @@
+{
+  "name": "gltf-mcp-viewer",
+  "displayName": "GLTF MCP Viewer",
+  "description": "在编辑器内嵌 Webview 中打开 gltf-mcp 开发页（需先 npm run dev）",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "gltf-mcp-local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/gltf-mcp.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onCommand:gltfMcp.openViewer"],
+  "main": "extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "gltf-mcp",
+      "properties": {
+        "gltfMcp.devServerPort": {
+          "type": "number",
+          "default": 5173,
+          "description": "与 npm run dev 使用的端口一致"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "gltfMcp.openViewer",
+        "title": "GLTF MCP: 在内嵌浏览器中打开查看器"
+      }
+    ]
+  }
+}

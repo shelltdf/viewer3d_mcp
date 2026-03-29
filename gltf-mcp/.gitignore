@@ -1,0 +1,6 @@
+node_modules/
+dist/
+electron-release/
+cursor-extension/*.vsix
+.DS_Store
+*.log

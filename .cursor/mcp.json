@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "user-mindmap": {
+      "command": "node",
+      "args": [
+        "c:/Users/shell/.cursor/extensions/av-ai-dev.mindmap-vscode-0.0.140/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "MINDMAP_BRIDGE_URL": "http://127.0.0.1:58741",
+        "MINDMAP_BRIDGE_TOKEN": "25b79a0cb920d3d47620130d38ef6cfee3d00ec46ebbc69c"
+      }
+    },
+    "gltf-mcp": {
+      "command": "node",
+      "args": ["e:/ai_dev/ai_rules_template_3dviewer/gltf-mcp/mcp/index.mjs"],
+      "env": {
+        "GLTF_MCP_BRIDGE_URL": "http://127.0.0.1:5173",
+        "GLTF_MCP_BRIDGE_TOKEN": "dev-gltf-mcp-token"
+      }
+    }
+  }
+}
