@@ -27,7 +27,7 @@ alwaysApply: true
 - `<项目根或用户指定>/java/`：Java 子项目（典型：Maven/Gradle、`src/main/java`、`src/test/java` 等）
 - `<项目根或用户指定>/nodejs/`：Node.js 子项目（典型：`package.json`、`src/`、`test/` 等）
 - `<项目根或用户指定>/frontend-react/`：React 前端（典型：Vite/Next.js）
-- `<项目根或用户指定>/gltf-mcp/`：Vue 前端（含 MCP 桥接示例）
+- `<项目根或用户指定>/frontend-vue/`：Vue 前端
 
 约束：
 
