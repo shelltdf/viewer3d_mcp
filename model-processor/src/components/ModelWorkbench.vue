@@ -32,12 +32,18 @@ const showLogModal = ref(false)
 const showMemoryModal = ref(false)
 const memoryPanel = ref('source')
 const showDuplicateModal = ref(false)
-const dupPanel = ref('source')
+/** 递增以使重复资源弹窗在合并后重新拉取分析（Three 场景非响应式，避免 computed 缓存陈旧数据） */
+const dupSceneRevision = ref(0)
+/** 双视口：可单独或同时显示「处理前 / 处理后」格子（至少保留一侧） */
+const showViewportSource = ref(true)
+const showViewportResult = ref(true)
 const memStats = ref({
   js: null,
   gpuEst: 0,
   gpuPeakEst: 0,
   textures: 0,
+  source: null,
+  result: null,
 })
 
 const lightboxOpen = ref(false)
@@ -89,6 +95,10 @@ watch(
   },
   { immediate: true },
 )
+
+watch([showViewportSource, showViewportResult], ([s, r]) => {
+  if (!s && !r) showViewportResult.value = true
+})
 
 const inspectorPayload = computed(() => {
   const panel = focusPanel.value
@@ -184,10 +194,26 @@ function getDupAnalysis(panel) {
   return dualRef.value?.getDuplicateAnalysis?.(panel) ?? null
 }
 
+function getDupResourceGraph(panel) {
+  return dualRef.value?.getResourceGraph?.(panel) ?? { nodes: [], edges: [], stats: {} }
+}
+
 function onDuplicateMerge(payload) {
-  dualRef.value?.applyDuplicateMerges?.(payload)
-  showDuplicateModal.value = false
-  setStatus('已执行重复资源合并', 'ok')
+  const summary = dualRef.value?.applyDuplicateMerges?.(payload) ?? {}
+  dupSceneRevision.value += 1
+
+  const parts = []
+  if (summary.textureMerged)
+    parts.push(`贴图合并省去 ${summary.textureMerged} 份 Texture 实例`)
+  if (summary.materialMerged)
+    parts.push(`材质合并省去 ${summary.materialMerged} 份 Material 实例`)
+  if (summary.nodesRemoved) parts.push(`移除 ${summary.nodesRemoved} 个重复场景节点`)
+  const detail =
+    parts.length > 0
+      ? parts.join('；')
+      : '所选操作已应用（若无重复项则计数可能为 0）'
+
+  setStatus(`合并完成（仅处理后场景）：${detail}。弹窗已保持打开并刷新列表。`, 'ok')
 }
 
 function onOutlineUpdated(payload) {
@@ -225,7 +251,10 @@ function onSourceLoaded(payload) {
   selectedSourceUuid.value = null
   selectedResultUuid.value = null
   focusPanel.value = 'source'
-  setStatus(`已加载源模型 · 动画片段：${payload?.animations ?? 0}`, 'ok')
+  setStatus(
+    `已加载源模型 · 动画片段：${payload?.animations ?? 0}；已自动深度克隆至「处理后」（右侧为可编辑副本）`,
+    'ok',
+  )
 }
 
 function onResultUpdated(payload) {
@@ -378,6 +407,14 @@ function openWorkspaceMenu() {
       <button type="button" class="tool-btn primary" @click="openFiles">打开</button>
       <button type="button" class="tool-btn" @click="dualRef?.resetCameras?.()">重置相机</button>
       <button type="button" class="tool-btn accent" @click="previewOptimize">预览处理结果</button>
+      <div class="toolbar-vp" title="控制中央双视口是否显示；大纲仍可分别浏览两侧">
+        <label class="toolbar-cb"
+          ><input v-model="showViewportSource" type="checkbox" /> 显示处理前</label
+        >
+        <label class="toolbar-cb"
+          ><input v-model="showViewportResult" type="checkbox" /> 显示处理后</label
+        >
+      </div>
       <span class="toolbar-gap" />
       <label class="inline">
         <span class="lbl">URL</span>
@@ -417,6 +454,8 @@ function openWorkspaceMenu() {
       <main class="center">
         <DualViewport
           ref="dualRef"
+          :show-source="showViewportSource"
+          :show-result="showViewportResult"
           @viewer-error="onViewerError"
           @status="onDualStatus"
           @source-loaded="onSourceLoaded"
@@ -436,6 +475,7 @@ function openWorkspaceMenu() {
         <div v-show="!dockCollapsed" class="dock-body">
           <PropertyInspector
             :payload="inspectorPayload"
+            :selection-panel="focusPanel"
             @open-lightbox="onPreviewLightbox"
             @action="onInspectorAction"
           />
@@ -685,10 +725,10 @@ function openWorkspaceMenu() {
 
     <DuplicateResourceModal
       :open="showDuplicateModal"
-      :panel="dupPanel"
+      :scene-revision="dupSceneRevision"
       :get-analysis="getDupAnalysis"
+      :get-resource-graph="getDupResourceGraph"
       @close="showDuplicateModal = false"
-      @update:panel="dupPanel = $event"
       @merge="onDuplicateMerge"
     />
 
@@ -709,14 +749,16 @@ function openWorkspaceMenu() {
 
     <footer class="statusbar" :class="`st-${statusKind}`" title="双击打开日志" @dblclick="openLogModal">
       <span class="status-msg">{{ statusText }}</span>
-      <span class="status-mem" title="JS 堆仅在 Chromium 系可用；GPU/显存为粗估；峰值为本会话记录">
-        <template v-if="memStats.js">
-          JS {{ fmtMemBar(memStats.js.used) }} / {{ fmtMemBar(memStats.js.limit) }}
-        </template>
-        <template v-else>JS —</template>
-        · GPU 估 {{ fmtMemBar(memStats.gpuEst) }} · 峰值 {{ fmtMemBar(memStats.gpuPeakEst) }} · 纹理
-        {{ memStats.textures }}
-      </span>
+      <div class="status-right" title="各视口格内左上角为左右独立「存储估」；此处为进程级 JS/GPU 粗估">
+        <span class="status-js-line">
+          <template v-if="memStats.js">
+            JS {{ fmtMemBar(memStats.js.used) }} / {{ fmtMemBar(memStats.js.limit) }}
+          </template>
+          <template v-else>JS —</template>
+          · 合计 GPU 估 {{ fmtMemBar(memStats.gpuEst) }} · 峰值 {{ fmtMemBar(memStats.gpuPeakEst) }} · WebGL 纹理对象
+          {{ memStats.textures }}
+        </span>
+      </div>
     </footer>
   </div>
 </template>
@@ -927,6 +969,27 @@ function openWorkspaceMenu() {
   flex: 1 1 20px;
   min-width: 8px;
 }
+.toolbar-vp {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 2px 8px;
+  border-left: 1px solid #4a5160;
+  border-right: 1px solid #4a5160;
+  font-size: 11px;
+  color: #c5cdd9;
+}
+.toolbar-cb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.toolbar-cb input {
+  accent-color: #5a9fd4;
+}
 .inline {
   display: flex;
   align-items: center;
@@ -1106,9 +1169,10 @@ function openWorkspaceMenu() {
 .statusbar {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   padding: 7px 12px;
   font-size: 12px;
   border-top: 1px solid #3a3f4a;
@@ -1116,18 +1180,23 @@ function openWorkspaceMenu() {
   cursor: pointer;
 }
 .status-msg {
-  flex: 1 1 auto;
+  flex: 1 1 220px;
   min-width: 0;
 }
-.status-mem {
-  flex: 0 1 auto;
+.status-right {
+  flex: 1 1 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+.status-js-line {
   font-size: 10px;
-  color: #8aa4c8;
+  color: #9aa8bc;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  max-width: 55vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  text-align: right;
+  max-width: 100%;
 }
 .st-loading {
   color: #a8d4ff;

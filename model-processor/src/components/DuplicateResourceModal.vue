@@ -1,21 +1,30 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import ResourceRefGraph from './ResourceRefGraph.vue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
-  panel: { type: String, default: 'source' },
+  /** 合并等操作后递增，强制重新执行 getAnalysis/getGraph */
+  sceneRevision: { type: Number, default: 0 },
+  /** @param {string} panel — 弹窗内固定使用 `'result'`，保留签名以兼容父组件包装函数 */
   getAnalysis: { type: Function, required: true },
+  getResourceGraph: { type: Function, default: null },
 })
 
-const emit = defineEmits(['close', 'update:panel', 'merge'])
+const emit = defineEmits(['close', 'merge'])
+
+/** 合并与引用图仅针对「处理后」场景 */
+const DUP_PANEL = 'result'
 
 const selectedTexture = ref({})
 const selectedMaterial = ref({})
 const selectedMesh = ref({})
 
 const analysis = computed(() => {
+  void props.sceneRevision
+  if (!props.open) return null
   try {
-    return props.getAnalysis(props.panel) || null
+    return props.getAnalysis(DUP_PANEL) || null
   } catch {
     return null
   }
@@ -42,7 +51,7 @@ function resetSelectionsFromAnalysis() {
 }
 
 watch(
-  () => [props.open, props.panel, analysis.value],
+  () => [props.open, props.sceneRevision],
   () => {
     if (props.open) resetSelectionsFromAnalysis()
   },
@@ -77,7 +86,7 @@ function onMerge() {
   }
 
   if (!ops.length) return
-  emit('merge', { panel: props.panel, ops })
+  emit('merge', { panel: 'result', ops })
 }
 
 </script>
@@ -91,26 +100,18 @@ function onMerge() {
           <h2>重复资源共享</h2>
           <button type="button" class="dup-x" @click="emit('close')">×</button>
         </header>
-        <div class="dup-toggle">
-          <button
-            type="button"
-            class="dup-tab"
-            :class="{ on: panel === 'source' }"
-            @click="emit('update:panel', 'source')"
-          >
-            处理前
-          </button>
-          <button
-            type="button"
-            class="dup-tab"
-            :class="{ on: panel === 'result' }"
-            @click="emit('update:panel', 'result')"
-          >
-            处理后
-          </button>
-        </div>
+        <p class="dup-scope-hint">
+          仅分析与合并「处理后」场景（深度克隆侧）。「处理前」仅在大纲 / 双视口对照，不在此窗切换。
+        </p>
 
         <div v-if="analysis" class="dup-body">
+          <ResourceRefGraph
+            v-if="getResourceGraph"
+            :panel="DUP_PANEL"
+            :scene-revision="sceneRevision"
+            :get-graph="getResourceGraph"
+          />
+
           <p class="dup-hint">
             以下为可合并分组：勾选要执行合并的分组，并在组内选择保留项（其余引用将指向保留资源或删除重复节点）。
           </p>
@@ -223,7 +224,7 @@ function onMerge() {
             <button type="button" class="tool-btn" @click="emit('close')">关闭</button>
           </div>
         </div>
-        <div v-else class="dup-empty">当前侧无场景。</div>
+        <div v-else class="dup-empty">处理后场景未就绪（请先加载模型）。</div>
       </div>
     </div>
   </Teleport>
@@ -246,8 +247,8 @@ function onMerge() {
 .dup-panel {
   position: relative;
   z-index: 1;
-  width: min(720px, 96vw);
-  max-height: min(88vh, 760px);
+  width: min(960px, 98vw);
+  max-height: min(90vh, 900px);
   overflow: auto;
   background: linear-gradient(#2c3138, #252a32);
   border: 1px solid #4a5568;
@@ -273,25 +274,14 @@ function onMerge() {
   font-size: 22px;
   cursor: pointer;
 }
-.dup-toggle {
-  display: flex;
-  gap: 8px;
+.dup-scope-hint {
+  margin: 0;
   padding: 10px 14px 0;
-}
-.dup-tab {
-  flex: 1;
-  padding: 8px;
-  border: 1px solid #4a5568;
-  border-radius: 4px;
-  background: #2a3038;
-  color: #aeb6c4;
-  cursor: pointer;
-  font-size: 12px;
-}
-.dup-tab.on {
-  background: #3d5a82;
-  border-color: #6b94c9;
-  color: #f0f4fc;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #b8a878;
+  background: linear-gradient(90deg, rgba(72, 52, 30, 0.35), transparent);
+  border-bottom: 1px solid #4a4030;
 }
 .dup-body {
   padding: 12px 14px 0;
@@ -406,5 +396,9 @@ function onMerge() {
 }
 .tool-btn.accent {
   background: linear-gradient(#3d7a5c, #2f6349);
+}
+.tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 </style>

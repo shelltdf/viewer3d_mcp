@@ -22,7 +22,15 @@ import {
   mergeMaterialGroup,
   mergeMeshInstances,
 } from '../utils/analyzeDuplicateResources.js'
-import { applyDisplayMode, clearSkeletonHelpers } from '../utils/displayModeHelpers.js'
+import { buildSceneResourceGraph } from '../utils/sceneResourceGraph.js'
+import { applyViewportViewState, clearSkeletonHelpers } from '../utils/displayModeHelpers.js'
+
+const props = defineProps({
+  /** 是否显示「处理前」视口格子 */
+  showSource: { type: Boolean, default: true },
+  /** 是否显示「处理后」视口格子；二者可单独或同时开启 */
+  showResult: { type: Boolean, default: true },
+})
 
 const emit = defineEmits([
   'source-loaded',
@@ -42,8 +50,19 @@ const linkCameras = ref(true)
 const viewHudSource = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
 const viewHudResult = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
 
-/** @type {'shaded' | 'wireframe' | 'albedo' | 'normals' | 'vertices' | 'skeleton'} */
-const displayMode = ref('shaded')
+function defaultViewState() {
+  return {
+    geometryMode: 'solid',
+    lightingMode: 'studio',
+    textureMode: 'full',
+    materialMode: 'original',
+    skeletonMode: 'off',
+  }
+}
+
+/** 处理前 / 处理后各自独立的显示状态（与 Three 场景无响应式绑定，修改后由 watch 应用） */
+const viewStateSource = ref(defaultViewState())
+const viewStateResult = ref(defaultViewState())
 const hudExpanded = ref(true)
 const displayCtxA = { skeletonHelpers: [] }
 const displayCtxB = { skeletonHelpers: [] }
@@ -122,9 +141,17 @@ function disposeObject3D(root) {
   })
 }
 
-function reapplyDisplayModes() {
-  applyDisplayMode(sourceRoot, displayMode.value, displayCtxA)
-  applyDisplayMode(resultRoot, displayMode.value, displayCtxB)
+function reapplyViewSource() {
+  applyViewportViewState(sourceRoot, viewStateSource.value, displayCtxA, sceneA)
+}
+
+function reapplyViewResult() {
+  applyViewportViewState(resultRoot, viewStateResult.value, displayCtxB, sceneB)
+}
+
+function reapplyBothViews() {
+  reapplyViewSource()
+  reapplyViewResult()
 }
 
 function refreshOutline(panel) {
@@ -179,12 +206,13 @@ function applyObject3DToSource(object) {
   sceneA.add(sourceRoot)
   fitCameraToObject(cameraA, controlsA, sourceRoot)
   applyLodDrawRange(sourceRoot, lodSource.value)
-  reapplyDisplayModes()
+  reapplyBothViews()
   emit('source-loaded', {
     outline: buildRichOutline(sourceRoot, { clips: [] }),
     animations: 0,
     clips: [],
   })
+  syncResultFromSource({ skipStatus: true })
 }
 
 function applyGltfToSource(gltf) {
@@ -206,12 +234,13 @@ function applyGltfToSource(gltf) {
   }
   fitCameraToObject(cameraA, controlsA, sourceRoot)
   applyLodDrawRange(sourceRoot, lodSource.value)
-  reapplyDisplayModes()
+  reapplyBothViews()
   emit('source-loaded', {
     outline: buildRichOutline(sourceRoot, { clips: sourceClips }),
     animations: gltf.animations?.length || 0,
     clips: sourceClips,
   })
+  syncResultFromSource({ skipStatus: true })
 }
 
 function urlModifierFromFileMap(map) {
@@ -256,7 +285,7 @@ async function loadObjFromUrl(url) {
   if (materials) objLoader.setMaterials(materials)
   const object = objLoader.parse(text)
   applyObject3DToSource(object)
-  emit('status', `已加载 OBJ：${url}`)
+  emit('status', `已加载 OBJ：${url}；已自动深度克隆至「处理后」`)
 }
 
 /** 单个本地 .obj，无 mtllib，或需用户多选带 MTL 的文件集。 */
@@ -271,7 +300,7 @@ async function loadObjSingleBlob(file) {
   const objLoader = new OBJLoader()
   const object = objLoader.parse(text)
   applyObject3DToSource(object)
-  emit('status', '已加载 .obj（无 MTL）')
+  emit('status', '已加载 .obj（无 MTL）；已自动深度克隆至「处理后」')
 }
 
 /**
@@ -327,11 +356,15 @@ async function loadObjFromFileList(files) {
   if (materials) objLoader.setMaterials(materials)
   const object = objLoader.parse(objText)
   applyObject3DToSource(object)
-  emit('status', materials ? '已加载 OBJ + MTL（含贴图）' : '已加载 OBJ（无 mtllib）')
+  const base = materials ? '已加载 OBJ + MTL（含贴图）' : '已加载 OBJ（无 mtllib）'
+  emit('status', `${base}；已自动深度克隆至「处理后」`)
   setTimeout(revokeAll, 1200)
 }
 
-function syncResultFromSource() {
+/**
+ * @param {{ skipStatus?: boolean }} [opts] skipStatus：不写入状态栏（用于加载流程末尾统一提示）
+ */
+function syncResultFromSource(opts = {}) {
   if (!sourceRoot) {
     emit('viewer-error', '请先加载源模型')
     return
@@ -347,13 +380,19 @@ function syncResultFromSource() {
     sceneB.add(resultRoot)
     fitCameraToObject(cameraB, controlsB, resultRoot)
     applyLodDrawRange(resultRoot, lodResult.value)
-    reapplyDisplayModes()
+    if (resultClips.length) {
+      mixerB = new THREE.AnimationMixer(resultRoot)
+      for (const clip of resultClips) {
+        mixerB.clipAction(clip).play()
+      }
+    }
+    reapplyBothViews()
     emit('result-updated', {
       outline: buildRichOutline(resultRoot, { clips: resultClips }),
       animations: resultClips.length,
       clips: resultClips,
     })
-    emit('status', '已生成处理后预览（网格克隆）')
+    if (!opts.skipStatus) emit('status', '已生成处理后预览（网格克隆）')
   } catch (e) {
     emit('viewer-error', e?.message || String(e))
   }
@@ -392,17 +431,30 @@ function resolveOutlineItem(panel, item) {
   return { kind: 'empty' }
 }
 
-watch(lodSource, (v) => {
-  if (sourceRoot) applyLodDrawRange(sourceRoot, v)
-})
-
 watch(lodResult, (v) => {
   if (resultRoot) applyLodDrawRange(resultRoot, v)
 })
 
-watch(displayMode, () => {
-  reapplyDisplayModes()
-})
+watch(
+  () => [props.showSource, props.showResult],
+  () => nextTick(() => onResize()),
+)
+
+watch(
+  viewStateSource,
+  () => {
+    reapplyViewSource()
+  },
+  { deep: true },
+)
+
+watch(
+  viewStateResult,
+  () => {
+    reapplyViewResult()
+  },
+  { deep: true },
+)
 
 async function loadUrl(url) {
   try {
@@ -417,7 +469,7 @@ async function loadUrl(url) {
     }
     const gltf = await gltfLoader.loadAsync(url)
     applyGltfToSource(gltf)
-    emit('status', `已加载：${url}`)
+    emit('status', `已加载：${url}；已自动深度克隆至「处理后」`)
   } catch (e) {
     const msg = e?.message || String(e)
     emit('viewer-error', msg)
@@ -445,6 +497,7 @@ async function loadFile(file) {
   try {
     const gltf = await gltfLoader.loadAsync(objectUrl)
     applyGltfToSource(gltf)
+    emit('status', `已加载：${file.name}；已自动深度克隆至「处理后」`)
   } catch (e) {
     const msg = e?.message || String(e)
     emit('viewer-error', msg)
@@ -493,6 +546,7 @@ async function loadFiles(fileList) {
   try {
     const gltf = await localLoader.loadAsync(map.get(gltfFile.name))
     applyGltfToSource(gltf)
+    emit('status', `已加载：${gltfFile.name}；已自动深度克隆至「处理后」`)
   } catch (e) {
     const raw = e?.message || String(e)
     const msg =
@@ -556,6 +610,22 @@ function animate() {
       gpuEst,
       gpuPeakEst,
       textures: (s.textures || 0) + (r.textures || 0),
+      source: {
+        vram: s.vram || 0,
+        cpu: s.cpu || 0,
+        geo: s.geo || 0,
+        tex: s.tex || 0,
+        geometries: s.geometries ?? 0,
+        textures: s.textures ?? 0,
+      },
+      result: {
+        vram: r.vram || 0,
+        cpu: r.cpu || 0,
+        geo: r.geo || 0,
+        tex: r.tex || 0,
+        geometries: r.geometries ?? 0,
+        textures: r.textures ?? 0,
+      },
     })
   }
   if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
@@ -693,18 +763,34 @@ function getDuplicateAnalysis(which) {
   return analyzeDuplicateResources(root)
 }
 
+function getResourceGraph(which) {
+  const root = which === 'source' ? sourceRoot : resultRoot
+  return buildSceneResourceGraph(root)
+}
+
 function applyDuplicateMerges(payload) {
-  const { panel, ops } = payload
-  const root = panel === 'source' ? sourceRoot : resultRoot
-  if (!root || !ops?.length) return
+  const empty = { textureMerged: 0, materialMerged: 0, nodesRemoved: 0, groupsApplied: 0 }
+  const { ops } = payload
+  /** 处理前只读：合并与工具仅作用于「处理后」独立场景 */
+  const root = resultRoot
+  if (!root || !ops?.length) return empty
+  let textureMerged = 0
+  let materialMerged = 0
+  let nodesRemoved = 0
   for (const op of ops) {
-    if (op.kind === 'texture') mergeTextureGroup(root, op.textures, op.keepUuid)
-    else if (op.kind === 'material') mergeMaterialGroup(root, op.materials, op.keepUuid)
-    else if (op.kind === 'object' || op.kind === 'mesh')
-      mergeMeshInstances(op.keepUuid, op.items)
+    if (op.kind === 'texture') {
+      const r = mergeTextureGroup(root, op.textures, op.keepUuid)
+      textureMerged += r.merged
+    } else if (op.kind === 'material') {
+      const r = mergeMaterialGroup(root, op.materials, op.keepUuid)
+      materialMerged += r.merged
+    } else if (op.kind === 'object' || op.kind === 'mesh') {
+      const r = mergeMeshInstances(op.keepUuid, op.items)
+      nodesRemoved += r.removed
+    }
   }
-  refreshOutline(panel)
-  emit('status', '已合并所选重复资源')
+  refreshOutline('result')
+  return { textureMerged, materialMerged, nodesRemoved, groupsApplied: ops.length }
 }
 
 defineExpose({
@@ -715,6 +801,7 @@ defineExpose({
   resolveOutlineItem,
   getMemoryEstimate,
   getDuplicateAnalysis,
+  getResourceGraph,
   applyDuplicateMerges,
   linkCameras,
   resetCameras() {
@@ -725,22 +812,56 @@ defineExpose({
 </script>
 
 <template>
-  <div class="dual-viewport">
-    <div class="display-mode-bar" title="双视口共用同一显示模式">
-      <span class="dm-label">显示方式</span>
-      <select v-model="displayMode" class="dm-select">
-        <option value="shaded">光照 / 材质</option>
-        <option value="wireframe">线框</option>
-        <option value="albedo">贴图（无光照）</option>
-        <option value="normals">法线 / 材质朝向</option>
-        <option value="vertices">顶点</option>
-        <option value="skeleton">骨骼</option>
-      </select>
-    </div>
-    <div class="vp-stack">
-      <div class="vp-label">处理前</div>
+  <div
+    class="dual-viewport"
+    :class="{
+      'layout-only-source': showSource && !showResult,
+      'layout-only-result': !showSource && showResult,
+    }"
+  >
+    <div v-show="showSource" class="vp-stack vp-stack-source">
+      <div class="vp-label-row">
+        <div class="vp-label">处理前（只读快照 · 与处理后无引用关系）</div>
+        <div class="vp-toolbar" title="仅影响左侧视口显示，不改源数据">
+          <select v-model="viewStateSource.geometryMode" class="vt-sel">
+            <option value="solid">实体</option>
+            <option value="wireframe">线框</option>
+            <option value="points">点云</option>
+          </select>
+          <select v-model="viewStateSource.lightingMode" class="vt-sel">
+            <option value="studio">光照·影棚</option>
+            <option value="soft">光照·柔和</option>
+            <option value="flat">光照·平铺</option>
+          </select>
+          <select v-model="viewStateSource.textureMode" class="vt-sel">
+            <option value="full">贴图·采样</option>
+            <option value="albedoFlat">贴图·无光照</option>
+            <option value="hideMaps">贴图·隐藏</option>
+          </select>
+          <select v-model="viewStateSource.materialMode" class="vt-sel">
+            <option value="original">材质·原始</option>
+            <option value="normal">材质·法线</option>
+            <option value="uv">材质·UV 格</option>
+          </select>
+          <select v-model="viewStateSource.skeletonMode" class="vt-sel">
+            <option value="off">骨骼·关</option>
+            <option value="bones">骨骼·骨架</option>
+            <option value="weights">骨骼·权重示意</option>
+          </select>
+        </div>
+      </div>
       <div class="vp-canvas-wrap">
         <div ref="sourceEl" class="vp-canvas" />
+        <div class="vp-mem-corner vp-mem-corner--src" title="本格粗估：CPU 总占用与显存相关字节">
+          <span class="mem-corner-label">存储估</span>
+          <span class="mem-corner-main"
+            >{{ fmtBytes(viewHudSource.cpu) }} · VRAM≈{{ fmtBytes(viewHudSource.vram) }}</span
+          >
+          <span class="mem-corner-sub"
+            >Geo {{ fmtBytes(viewHudSource.geo) }} · Tex {{ fmtBytes(viewHudSource.tex) }} · GL
+            {{ viewHudSource.geometries }}/{{ viewHudSource.textures }}</span
+          >
+        </div>
         <button
           type="button"
           class="hud-toggle"
@@ -758,32 +879,64 @@ defineExpose({
             <input v-model="linkCameras" type="checkbox" />
             联动观察
           </label>
-          <div class="hud-mem">
-            内存≈{{ fmtBytes(viewHudSource.cpu) }} · 显存估≈{{ fmtBytes(viewHudSource.vram) }}
-            <span class="hud-mem-sub">
-              （几何 {{ fmtBytes(viewHudSource.geo) }} · 贴图 {{ fmtBytes(viewHudSource.tex) }}）
-            </span>
-          </div>
-          <div class="hud-mem-mini">
-            WebGL：几何 {{ viewHudSource.geometries }} · 纹理对象 {{ viewHudSource.textures }}
-          </div>
-          <label class="hud-lod">
-            <span>LOD</span>
-            <input v-model.number="lodSource" type="range" min="0.02" max="1" step="0.02" />
-            <span class="hud-lod-val">{{ (lodSource * 100).toFixed(0) }}%</span>
-          </label>
+          <div class="hud-readonly-note">源网格 LOD 固定 100%（只读）</div>
         </div>
         <div v-else class="vp-hud vp-hud-compact">
-          <span class="hud-mini-line">
-            △ {{ statsSource.triangles.toLocaleString() }} · 显存估 {{ fmtBytes(viewHudSource.vram) }}
-          </span>
+          <span class="hud-mini-line">△ {{ statsSource.triangles.toLocaleString() }}（详情见左上角存储估）</span>
         </div>
       </div>
     </div>
-    <div class="vp-stack">
-      <div class="vp-label">处理后</div>
+    <div v-show="showResult" class="vp-stack vp-stack-result">
+      <div class="vp-label-row">
+        <div class="vp-label">处理后（工具与合并仅作用本侧 · 深度克隆）</div>
+        <div class="vp-toolbar" title="仅影响右侧视口显示">
+          <select v-model="viewStateResult.geometryMode" class="vt-sel">
+            <option value="solid">实体</option>
+            <option value="wireframe">线框</option>
+            <option value="points">点云</option>
+          </select>
+          <select v-model="viewStateResult.lightingMode" class="vt-sel">
+            <option value="studio">光照·影棚</option>
+            <option value="soft">光照·柔和</option>
+            <option value="flat">光照·平铺</option>
+          </select>
+          <select v-model="viewStateResult.textureMode" class="vt-sel">
+            <option value="full">贴图·采样</option>
+            <option value="albedoFlat">贴图·无光照</option>
+            <option value="hideMaps">贴图·隐藏</option>
+          </select>
+          <select v-model="viewStateResult.materialMode" class="vt-sel">
+            <option value="original">材质·原始</option>
+            <option value="normal">材质·法线</option>
+            <option value="uv">材质·UV 格</option>
+          </select>
+          <select v-model="viewStateResult.skeletonMode" class="vt-sel">
+            <option value="off">骨骼·关</option>
+            <option value="bones">骨骼·骨架</option>
+            <option value="weights">骨骼·权重示意</option>
+          </select>
+        </div>
+      </div>
       <div class="vp-canvas-wrap">
         <div ref="resultEl" class="vp-canvas" />
+        <div class="vp-mem-corner vp-mem-corner--dst" title="本格粗估：CPU 总占用与显存相关字节">
+          <span class="mem-corner-label">存储估</span>
+          <span class="mem-corner-main"
+            >{{ fmtBytes(viewHudResult.cpu) }} · VRAM≈{{ fmtBytes(viewHudResult.vram) }}</span
+          >
+          <span class="mem-corner-sub"
+            >Geo {{ fmtBytes(viewHudResult.geo) }} · Tex {{ fmtBytes(viewHudResult.tex) }} · GL
+            {{ viewHudResult.geometries }}/{{ viewHudResult.textures }}</span
+          >
+        </div>
+        <button
+          type="button"
+          class="hud-toggle"
+          :title="hudExpanded ? '折叠信息面板' : '展开信息面板'"
+          @click="hudExpanded = !hudExpanded"
+        >
+          {{ hudExpanded ? '▼ 信息' : '▲ 信息' }}
+        </button>
         <div v-if="hudExpanded" class="vp-hud">
           <div class="hud-stats">
             三角面 {{ statsResult.triangles.toLocaleString() }} · 顶点 {{ statsResult.vertices.toLocaleString() }} · Mesh
@@ -793,15 +946,6 @@ defineExpose({
             <input v-model="linkCameras" type="checkbox" />
             联动观察
           </label>
-          <div class="hud-mem">
-            内存≈{{ fmtBytes(viewHudResult.cpu) }} · 显存估≈{{ fmtBytes(viewHudResult.vram) }}
-            <span class="hud-mem-sub">
-              （几何 {{ fmtBytes(viewHudResult.geo) }} · 贴图 {{ fmtBytes(viewHudResult.tex) }}）
-            </span>
-          </div>
-          <div class="hud-mem-mini">
-            WebGL：几何 {{ viewHudResult.geometries }} · 纹理对象 {{ viewHudResult.textures }}
-          </div>
           <label class="hud-lod">
             <span>LOD</span>
             <input v-model.number="lodResult" type="range" min="0.02" max="1" step="0.02" />
@@ -809,9 +953,7 @@ defineExpose({
           </label>
         </div>
         <div v-else class="vp-hud vp-hud-compact">
-          <span class="hud-mini-line">
-            △ {{ statsResult.triangles.toLocaleString() }} · 显存估 {{ fmtBytes(viewHudResult.vram) }}
-          </span>
+          <span class="hud-mini-line">△ {{ statsResult.triangles.toLocaleString() }}（详情见左上角存储估）</span>
         </div>
       </div>
     </div>
@@ -827,35 +969,54 @@ defineExpose({
   min-height: 0;
   gap: 4px;
 }
-.display-mode-bar {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  z-index: 6;
+.dual-viewport.layout-only-source .vp-stack-source,
+.dual-viewport.layout-only-result .vp-stack-result {
+  flex: 1 1 auto;
+  min-height: 160px;
+}
+.vp-label-row {
+  flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 11px;
-  color: #d0d8e6;
-  background: rgba(15, 17, 21, 0.88);
-  border: 1px solid #3a4558;
-  border-radius: 6px;
-  pointer-events: auto;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  gap: 6px 10px;
+  padding: 5px 8px;
+  background: linear-gradient(#333945, #2a3038);
+  border-bottom: 1px solid #1f242c;
 }
-.dm-label {
-  color: #9aa3b0;
-  white-space: nowrap;
+.vp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
-.dm-select {
-  min-width: 140px;
-  padding: 4px 8px;
+.vt-sel {
+  min-width: 92px;
+  max-width: 118px;
+  padding: 3px 5px;
   border: 1px solid #4a5160;
-  border-radius: 4px;
+  border-radius: 3px;
   background: #1b2029;
   color: #e6ebf3;
-  font-size: 11px;
+  font-size: 10px;
+}
+.vp-stack-source .vp-label {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #7ec4e8;
+}
+.vp-stack-result .vp-label {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #e8c07e;
+}
+.hud-readonly-note {
+  flex: 1 1 100%;
+  font-size: 9px;
+  color: #6b8cae;
 }
 .hud-toggle {
   position: absolute;
@@ -895,12 +1056,16 @@ defineExpose({
   background: #0f1115;
 }
 .vp-label {
-  flex: 0 0 auto;
-  padding: 4px 8px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
-  color: #b8c0d0;
-  background: linear-gradient(#333945, #2a3038);
-  border-bottom: 1px solid #1f242c;
+  font-weight: 600;
+}
+.vp-stack-source {
+  border-color: #3a5f78;
+}
+.vp-stack-result {
+  border-color: #785f3a;
 }
 .vp-canvas-wrap {
   flex: 1 1 auto;
@@ -908,6 +1073,52 @@ defineExpose({
   position: relative;
   display: flex;
   flex-direction: column;
+}
+.vp-mem-corner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  max-width: min(340px, calc(100% - 96px));
+  padding: 5px 8px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #d8e8f4;
+  background: rgba(12, 14, 18, 0.86);
+  border: 1px solid #3d4a5c;
+  border-radius: 4px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+}
+.vp-mem-corner--src {
+  border-color: #4a7a9e;
+  color: #c8e4f8;
+}
+.vp-mem-corner--dst {
+  border-color: #9a7a4a;
+  color: #f8e4c8;
+}
+.mem-corner-label {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #8eb8d8;
+  margin-bottom: 2px;
+}
+.vp-mem-corner--dst .mem-corner-label {
+  color: #d8b88e;
+}
+.mem-corner-main {
+  display: block;
+  font-weight: 600;
+}
+.mem-corner-sub {
+  display: block;
+  font-size: 9px;
+  color: #8e97a6;
+  margin-top: 2px;
 }
 .vp-canvas {
   flex: 1 1 auto;
@@ -946,24 +1157,6 @@ defineExpose({
   font-size: 10px;
   color: #b8c8e0;
   cursor: pointer;
-}
-.hud-mem {
-  flex: 1 1 100%;
-  min-width: 0;
-  font-size: 10px;
-  line-height: 1.35;
-  color: #9fdfb8;
-  font-variant-numeric: tabular-nums;
-}
-.hud-mem-sub {
-  color: #8e97a6;
-  font-size: 9px;
-}
-.hud-mem-mini {
-  flex: 1 1 100%;
-  font-size: 9px;
-  color: #6b7a8e;
-  font-variant-numeric: tabular-nums;
 }
 .hud-lod {
   display: flex;

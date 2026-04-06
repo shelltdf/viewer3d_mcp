@@ -18,6 +18,8 @@ import {
 const props = defineProps({
   /** @type {any} */
   payload: { type: Object, default: null },
+  /** 与大纲当前焦点一致：source=处理前只读，result=处理后可编辑 */
+  selectionPanel: { type: String, default: 'source' },
 })
 
 const emit = defineEmits(['open-lightbox', 'action'])
@@ -62,6 +64,8 @@ const title = computed(() => {
   }
   return map[p.kind] || '属性'
 })
+
+const isReadOnlyContext = computed(() => props.selectionPanel === 'source')
 
 function fmt(v) {
   if (v === undefined || v === null) return '—'
@@ -164,6 +168,19 @@ function onDecompressTexture() {
 
 <template>
   <div class="inspector">
+    <div
+      v-if="payload && payload.kind !== 'empty'"
+      class="selection-context-bar"
+      :class="isReadOnlyContext ? 'selection-context-bar--readonly' : 'selection-context-bar--editable'"
+      role="status"
+    >
+      <span class="ctx-badge">{{ isReadOnlyContext ? '只读' : '可编辑' }}</span>
+      <span class="ctx-text">{{
+        isReadOnlyContext
+          ? '当前选中来自「处理前」，仅对照；工具 / 合并 / 管线不写此侧。'
+          : '当前选中来自「处理后」；工具、LOD、重复资源合并等均作用于此副本。'
+      }}</span>
+    </div>
     <p class="inspector-title">{{ title }}</p>
     <div v-if="!payload || payload.kind === 'empty'" class="empty">在左侧大纲中选择一个条目</div>
 
@@ -456,6 +473,49 @@ function onDecompressTexture() {
 </template>
 
 <style scoped>
+.selection-context-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border-width: 2px;
+  border-style: solid;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.selection-context-bar--readonly {
+  background: rgba(90, 35, 35, 0.35);
+  border-color: #c45c5c;
+  color: #ffd6d6;
+}
+.selection-context-bar--editable {
+  background: rgba(35, 80, 55, 0.38);
+  border-color: #4caf7a;
+  color: #d8f5e4;
+}
+.ctx-badge {
+  flex: 0 0 auto;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+.selection-context-bar--readonly .ctx-badge {
+  background: #8b2e2e;
+  color: #fff;
+}
+.selection-context-bar--editable .ctx-badge {
+  background: #2e6b45;
+  color: #fff;
+}
+.ctx-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .inspector {
   font-size: 12px;
   color: #c5cdd9;

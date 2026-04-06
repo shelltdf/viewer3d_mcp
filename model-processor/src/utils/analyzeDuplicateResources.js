@@ -1,7 +1,8 @@
 import { textureContentIdentityKey, refineTextureDuplicateClusters } from './textureContentHash.js'
 import { contentHashDualFromString } from './hashString.js'
 
-const MAP_KEYS = [
+/** 材质上参与去重/收集的贴图槽位（与 MTLLoader / glTF 常用槽一致） */
+export const MATERIAL_MAP_KEYS = [
   'map',
   'lightMap',
   'aoMap',
@@ -212,7 +213,7 @@ export function analyzeDuplicateResources(root) {
         slot: Array.isArray(obj.material) ? `slot ${slotIndex}` : 'material',
       })
 
-      for (const k of MAP_KEYS) {
+      for (const k of MATERIAL_MAP_KEYS) {
         const tex = mat[k]
         if (!tex?.isTexture) continue
         uniqueTextureUuids.add(tex.uuid)
@@ -332,7 +333,7 @@ export function mergeTextureGroup(root, textures, keepUuid) {
     for (const m of mats) {
       if (!m) continue
       let changed = false
-      for (const k of MAP_KEYS) {
+      for (const k of MATERIAL_MAP_KEYS) {
         const tex = m[k]
         if (tex && remove.some((t) => t.uuid === tex.uuid)) {
           m[k] = keep
