@@ -24,12 +24,18 @@ import {
 } from '../utils/analyzeDuplicateResources.js'
 import { buildSceneResourceGraph } from '../utils/sceneResourceGraph.js'
 import { applyViewportViewState, clearSkeletonHelpers } from '../utils/displayModeHelpers.js'
+import { applyRendererToneAndPipeline, applyViewportShadows } from '../utils/viewportRenderSettings.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
 
 const props = defineProps({
   /** 是否显示「处理前」视口格子 */
   showSource: { type: Boolean, default: true },
   /** 是否显示「处理后」视口格子；二者可单独或同时开启 */
   showResult: { type: Boolean, default: true },
+  /** 由工作台切换：隐藏左右 Dock 并放大中央视口；双视口时左右等分，单视口时单格铺满 */
+  viewportMaximized: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -64,10 +70,25 @@ function defaultViewState() {
 const viewStateSource = ref(defaultViewState())
 const viewStateResult = ref(defaultViewState())
 const hudExpanded = ref(true)
+/** 两侧视口共用的渲染策略（WebGL 前向渲染 + 可选后期） */
+const renderSettings = ref({
+  pipeline: 'pbr',
+  shadow: 'off',
+  hdr: 'on',
+  ssao: 'off',
+})
 const displayCtxA = { skeletonHelpers: [] }
 const displayCtxB = { skeletonHelpers: [] }
 let memEmitTick = 0
 let gpuPeakEst = 0
+/** @type {EffectComposer | null} */
+let composerA = null
+/** @type {EffectComposer | null} */
+let composerB = null
+/** @type {SSAOPass | null} */
+let ssaoPassA = null
+/** @type {SSAOPass | null} */
+let ssaoPassB = null
 
 function fmtBytes(n) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -83,6 +104,15 @@ let resultClips = []
 
 const sourceEl = ref(null)
 const resultEl = ref(null)
+/** 用于 ResizeObserver：flex 布局变化时未必触发 window.resize */
+const sourceCanvasWrapRef = ref(null)
+const resultCanvasWrapRef = ref(null)
+/** 打开模型：先清空再拉取；与 LoadingManager 进度联动 */
+const loadProgress = ref({ active: false, ratio: 0, message: '' })
+/** @type {ResizeObserver | null} */
+let resizeObserverA = null
+/** @type {ResizeObserver | null} */
+let resizeObserverB = null
 
 let rendererA
 let rendererB
@@ -152,6 +182,133 @@ function reapplyViewResult() {
 function reapplyBothViews() {
   reapplyViewSource()
   reapplyViewResult()
+}
+
+function disposePostProcess() {
+  try {
+    ssaoPassA?.dispose()
+  } catch {
+    /* ignore */
+  }
+  try {
+    ssaoPassB?.dispose()
+  } catch {
+    /* ignore */
+  }
+  try {
+    composerA?.dispose()
+  } catch {
+    /* ignore */
+  }
+  try {
+    composerB?.dispose()
+  } catch {
+    /* ignore */
+  }
+  ssaoPassA = null
+  ssaoPassB = null
+  composerA = null
+  composerB = null
+}
+
+function rebuildPostProcess() {
+  disposePostProcess()
+  const rs = renderSettings.value
+  if (rs.ssao !== 'on') return
+  if (!rendererA || !rendererB || !sceneA || !sceneB || !cameraA || !cameraB) return
+  const elA = sourceEl.value
+  const elB = resultEl.value
+  if (!elA?.clientWidth || !elB?.clientWidth) return
+
+  const wA = elA.clientWidth
+  const hA = elA.clientHeight
+  const wB = elB.clientWidth
+  const hB = elB.clientHeight
+  const prA = rendererA.getPixelRatio()
+  const prB = rendererB.getPixelRatio()
+
+  composerA = new EffectComposer(rendererA)
+  composerA.addPass(new RenderPass(sceneA, cameraA))
+  ssaoPassA = new SSAOPass(sceneA, cameraA, wA, hA)
+  ssaoPassA.kernelRadius = 12
+  composerA.addPass(ssaoPassA)
+  composerA.setPixelRatio(prA)
+  composerA.setSize(wA, hA)
+
+  composerB = new EffectComposer(rendererB)
+  composerB.addPass(new RenderPass(sceneB, cameraB))
+  ssaoPassB = new SSAOPass(sceneB, cameraB, wB, hB)
+  ssaoPassB.kernelRadius = 12
+  composerB.addPass(ssaoPassB)
+  composerB.setPixelRatio(prB)
+  composerB.setSize(wB, hB)
+}
+
+function applyGlobalRendererSettings() {
+  const rs = renderSettings.value
+  const hdrOn = rs.hdr === 'on'
+  applyRendererToneAndPipeline(rendererA, rs.pipeline, hdrOn)
+  applyRendererToneAndPipeline(rendererB, rs.pipeline, hdrOn)
+  applyViewportShadows(
+    [sceneA, sceneB],
+    sourceRoot,
+    resultRoot,
+    [rendererA, rendererB],
+    rs.shadow === 'on' ? 'on' : 'off',
+  )
+  rebuildPostProcess()
+}
+
+function teardownResizeObservers() {
+  resizeObserverA?.disconnect()
+  resizeObserverB?.disconnect()
+  resizeObserverA = null
+  resizeObserverB = null
+}
+
+function setupResizeObservers() {
+  teardownResizeObservers()
+  if (typeof ResizeObserver === 'undefined') return
+  const elA = sourceCanvasWrapRef.value
+  const elB = resultCanvasWrapRef.value
+  if (!elA || !elB) return
+  resizeObserverA = new ResizeObserver(() => nextTick(() => onResize()))
+  resizeObserverA.observe(elA)
+  resizeObserverB = new ResizeObserver(() => nextTick(() => onResize()))
+  resizeObserverB.observe(elB)
+}
+
+/**
+ * 打开新文件前：卸载当前处理前/处理后场景并广播空大纲（再显示进度条与请求网络）
+ */
+function resetModelStateBeforeLoad() {
+  clearResult()
+  clearSource()
+  sourceClips = []
+  resultClips = []
+  statsSource.value = { meshes: 0, triangles: 0, vertices: 0 }
+  emit('outline-updated', { panel: 'source', outline: [], animations: 0, clips: [] })
+  emit('outline-updated', { panel: 'result', outline: [], animations: 0, clips: [] })
+  nextTick(() => onResize())
+}
+
+/** @param {THREE.LoadingManager | null | undefined} mgr */
+function wrapManagerProgress(mgr) {
+  if (!mgr) return () => {}
+  const prev = mgr.onProgress
+  mgr.onProgress = (url, loaded, total) => {
+    try {
+      prev?.(url, loaded, total)
+    } catch {
+      /* ignore */
+    }
+    if (loadProgress.value.active && total > 0) {
+      loadProgress.value.ratio = Math.min(0.98, loaded / total)
+    }
+  }
+  return () => {
+    mgr.onProgress = prev
+  }
 }
 
 function refreshOutline(panel) {
@@ -393,6 +550,8 @@ function syncResultFromSource(opts = {}) {
       clips: resultClips,
     })
     if (!opts.skipStatus) emit('status', '已生成处理后预览（网格克隆）')
+    applyGlobalRendererSettings()
+    onResize()
   } catch (e) {
     emit('viewer-error', e?.message || String(e))
   }
@@ -456,36 +615,72 @@ watch(
   { deep: true },
 )
 
+watch(
+  renderSettings,
+  () => {
+    applyGlobalRendererSettings()
+    onResize()
+  },
+  { deep: true },
+)
+
+watch(
+  () => renderSettings.value.pipeline,
+  (p) => {
+    if (p === 'raytrace')
+      emit(
+        'status',
+        '「光追」模式占位：标准 WebGL 无实时硬件光追；当前与 PBR 前向路径等效，离线路径追踪可后续接入',
+      )
+  },
+)
+
 async function loadUrl(url) {
+  if (!gltfLoader) {
+    emit('viewer-error', '视口未就绪，请稍后重试')
+    return
+  }
+  resetModelStateBeforeLoad()
+  loadProgress.value = { active: true, ratio: 0, message: '正在打开…' }
+  const popProgress = wrapManagerProgress(sharedLoadingManager)
   try {
-    if (!gltfLoader) {
-      emit('viewer-error', '视口未就绪，请稍后重试')
-      return
-    }
     const pathOnly = url.split('?')[0].split('#')[0].toLowerCase()
     if (pathOnly.endsWith('.obj')) {
+      loadProgress.value.message = '正在加载 OBJ…'
       await loadObjFromUrl(url)
       return
     }
+    loadProgress.value.message = '正在加载 glTF…'
     const gltf = await gltfLoader.loadAsync(url)
+    loadProgress.value.ratio = 1
     applyGltfToSource(gltf)
     emit('status', `已加载：${url}；已自动深度克隆至「处理后」`)
   } catch (e) {
     const msg = e?.message || String(e)
     emit('viewer-error', msg)
     throw e
+  } finally {
+    popProgress()
+    loadProgress.value.active = false
+    loadProgress.value.ratio = 0
+    nextTick(() => onResize())
   }
 }
 
 async function loadFile(file) {
   const name = file.name.toLowerCase()
   if (name.endsWith('.obj')) {
+    resetModelStateBeforeLoad()
+    loadProgress.value = { active: true, ratio: 0.2, message: '正在解析 OBJ…' }
     try {
       await loadObjSingleBlob(file)
     } catch (e) {
       const msg = e?.message || String(e)
       emit('viewer-error', msg)
       throw e
+    } finally {
+      loadProgress.value.active = false
+      nextTick(() => onResize())
     }
     return
   }
@@ -493,9 +688,13 @@ async function loadFile(file) {
     emit('viewer-error', '视口未就绪，请稍后重试')
     return
   }
+  resetModelStateBeforeLoad()
+  loadProgress.value = { active: true, ratio: 0, message: `正在加载：${file.name}` }
+  const popProgress = wrapManagerProgress(sharedLoadingManager)
   const objectUrl = URL.createObjectURL(file)
   try {
     const gltf = await gltfLoader.loadAsync(objectUrl)
+    loadProgress.value.ratio = 1
     applyGltfToSource(gltf)
     emit('status', `已加载：${file.name}；已自动深度克隆至「处理后」`)
   } catch (e) {
@@ -503,7 +702,10 @@ async function loadFile(file) {
     emit('viewer-error', msg)
     throw e
   } finally {
+    popProgress()
     URL.revokeObjectURL(objectUrl)
+    loadProgress.value.active = false
+    nextTick(() => onResize())
   }
 }
 
@@ -513,12 +715,17 @@ async function loadFiles(fileList) {
 
   const hasObj = files.some((f) => f.name.toLowerCase().endsWith('.obj'))
   if (hasObj) {
+    resetModelStateBeforeLoad()
+    loadProgress.value = { active: true, ratio: 0, message: '正在加载 OBJ/MTL…' }
     try {
       await loadObjFromFileList(files)
     } catch (e) {
       const msg = e?.message || String(e)
       emit('viewer-error', msg)
       throw e
+    } finally {
+      loadProgress.value.active = false
+      nextTick(() => onResize())
     }
     return
   }
@@ -527,6 +734,8 @@ async function loadFiles(fileList) {
     await loadFile(files[0])
     return
   }
+  resetModelStateBeforeLoad()
+  loadProgress.value = { active: true, ratio: 0, message: '正在加载 glTF 及依赖…' }
   const map = new Map()
   for (const f of files) {
     map.set(f.name, URL.createObjectURL(f))
@@ -536,15 +745,18 @@ async function loadFiles(fileList) {
     files.find((f) => f.name.toLowerCase().endsWith('.glb'))
   if (!gltfFile) {
     for (const u of map.values()) URL.revokeObjectURL(u)
+    loadProgress.value.active = false
     throw new Error('请至少选择一个 .gltf 或 .glb 文件')
   }
   const manager = new THREE.LoadingManager()
   attachCompressedTextureHandlers(manager, rendererA)
   manager.setURLModifier(urlModifierFromFileMap(map))
+  const popProgress = wrapManagerProgress(manager)
   const localLoader = new GLTFLoader(manager)
   localLoader.setDRACOLoader(dracoLoader)
   try {
     const gltf = await localLoader.loadAsync(map.get(gltfFile.name))
+    loadProgress.value.ratio = 1
     applyGltfToSource(gltf)
     emit('status', `已加载：${gltfFile.name}；已自动深度克隆至「处理后」`)
   } catch (e) {
@@ -556,7 +768,10 @@ async function loadFiles(fileList) {
     emit('viewer-error', msg)
     throw new Error(msg)
   } finally {
+    popProgress()
     for (const u of map.values()) URL.revokeObjectURL(u)
+    loadProgress.value.active = false
+    nextTick(() => onResize())
   }
 }
 
@@ -628,14 +843,21 @@ function animate() {
       },
     })
   }
-  if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
-  if (rendererB && sceneB && cameraB) rendererB.render(sceneB, cameraB)
+  const useCompA = composerA && renderSettings.value.ssao === 'on'
+  const useCompB = composerB && renderSettings.value.ssao === 'on'
+  if (useCompA) composerA.render(delta)
+  else if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
+  if (useCompB) composerB.render(delta)
+  else if (rendererB && sceneB && cameraB) rendererB.render(sceneB, cameraB)
 }
 
 function onResize() {
   const elA = sourceEl.value
   const elB = resultEl.value
   if (!elA || !elB || !rendererA || !rendererB) return
+  const pr = Math.min(window.devicePixelRatio || 1, 2)
+  rendererA.setPixelRatio(pr)
+  rendererB.setPixelRatio(pr)
   const wA = elA.clientWidth
   const hA = elA.clientHeight
   const wB = elB.clientWidth
@@ -649,6 +871,14 @@ function onResize() {
     cameraB.aspect = wB / hB
     cameraB.updateProjectionMatrix()
     rendererB.setSize(wB, hB, false)
+  }
+  if (composerA && wA && hA) {
+    composerA.setPixelRatio(rendererA.getPixelRatio())
+    composerA.setSize(wA, hA)
+  }
+  if (composerB && wB && hB) {
+    composerB.setPixelRatio(rendererB.getPixelRatio())
+    composerB.setSize(wB, hB)
   }
 }
 
@@ -719,7 +949,9 @@ function mount() {
 
   window.addEventListener('resize', onResize)
   onResize()
+  applyGlobalRendererSettings()
   animate()
+  nextTick(() => setupResizeObservers())
 }
 
 onMounted(async () => {
@@ -729,7 +961,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
+  teardownResizeObservers()
   cancelAnimationFrame(animationId)
+  disposePostProcess()
   clearSource()
   clearResult()
   controlsA?.dispose()
@@ -749,6 +983,7 @@ onBeforeUnmount(() => {
 watch([sourceEl, resultEl], async () => {
   await nextTick()
   if (sourceEl.value && resultEl.value && !rendererA) mount()
+  else if (rendererA) nextTick(() => setupResizeObservers())
 })
 
 function getMemoryEstimate(which) {
@@ -817,8 +1052,24 @@ defineExpose({
     :class="{
       'layout-only-source': showSource && !showResult,
       'layout-only-result': !showSource && showResult,
+      'viewport-maximized': viewportMaximized,
+      'viewport-max-split': viewportMaximized && showSource && showResult,
+      'viewport-max-single': viewportMaximized && showSource !== showResult,
     }"
   >
+    <div v-if="loadProgress.active" class="vp-load-overlay" aria-live="polite">
+      <div class="vp-load-card">
+        <p class="vp-load-msg">{{ loadProgress.message }}</p>
+        <div class="vp-load-track">
+          <div
+            class="vp-load-fill"
+            :style="{ width: `${Math.min(100, Math.max(0, loadProgress.ratio * 100))}%` }"
+          />
+        </div>
+
+        <p class="vp-load-hint">已关闭上一模型，正在拉取与解析…</p>
+      </div>
+    </div>
     <div v-show="showSource" class="vp-stack vp-stack-source">
       <div class="vp-label-row">
         <div class="vp-label">处理前（只读快照 · 与处理后无引用关系）</div>
@@ -850,7 +1101,39 @@ defineExpose({
           </select>
         </div>
       </div>
-      <div class="vp-canvas-wrap">
+      <div class="vp-render-row" title="两侧视口共用同一套 WebGL 策略（任选一侧调节即可）">
+        <span class="vp-render-title">渲染与效果</span>
+        <label class="vp-gl">
+          <span>管线</span>
+          <select v-model="renderSettings.pipeline" class="vt-sel vt-sel-wide">
+            <option value="classic">固定流水线</option>
+            <option value="pbr">PBR</option>
+            <option value="raytrace">光追（占位）</option>
+          </select>
+        </label>
+        <label class="vp-gl">
+          <span>阴影</span>
+          <select v-model="renderSettings.shadow" class="vt-sel">
+            <option value="off">关</option>
+            <option value="on">平行光阴影</option>
+          </select>
+        </label>
+        <label class="vp-gl">
+          <span>HDR</span>
+          <select v-model="renderSettings.hdr" class="vt-sel">
+            <option value="off">关</option>
+            <option value="on">ACES</option>
+          </select>
+        </label>
+        <label class="vp-gl">
+          <span>SSAO</span>
+          <select v-model="renderSettings.ssao" class="vt-sel">
+            <option value="off">关</option>
+            <option value="on">屏幕空间 AO</option>
+          </select>
+        </label>
+      </div>
+      <div ref="sourceCanvasWrapRef" class="vp-canvas-wrap">
         <div ref="sourceEl" class="vp-canvas" />
         <div class="vp-mem-corner vp-mem-corner--src" title="本格粗估：CPU 总占用与显存相关字节">
           <span class="mem-corner-label">存储估</span>
@@ -917,7 +1200,39 @@ defineExpose({
           </select>
         </div>
       </div>
-      <div class="vp-canvas-wrap">
+      <div class="vp-render-row" title="两侧视口共用同一套 WebGL 策略（与左侧保持一致）">
+        <span class="vp-render-title">渲染与效果</span>
+        <label class="vp-gl">
+          <span>管线</span>
+          <select v-model="renderSettings.pipeline" class="vt-sel vt-sel-wide">
+            <option value="classic">固定流水线</option>
+            <option value="pbr">PBR</option>
+            <option value="raytrace">光追（占位）</option>
+          </select>
+        </label>
+        <label class="vp-gl">
+          <span>阴影</span>
+          <select v-model="renderSettings.shadow" class="vt-sel">
+            <option value="off">关</option>
+            <option value="on">平行光阴影</option>
+          </select>
+        </label>
+        <label class="vp-gl">
+          <span>HDR</span>
+          <select v-model="renderSettings.hdr" class="vt-sel">
+            <option value="off">关</option>
+            <option value="on">ACES</option>
+          </select>
+        </label>
+        <label class="vp-gl">
+          <span>SSAO</span>
+          <select v-model="renderSettings.ssao" class="vt-sel">
+            <option value="off">关</option>
+            <option value="on">屏幕空间 AO</option>
+          </select>
+        </label>
+      </div>
+      <div ref="resultCanvasWrapRef" class="vp-canvas-wrap">
         <div ref="resultEl" class="vp-canvas" />
         <div class="vp-mem-corner vp-mem-corner--dst" title="本格粗估：CPU 总占用与显存相关字节">
           <span class="mem-corner-label">存储估</span>
@@ -968,6 +1283,98 @@ defineExpose({
   flex: 1 1 auto;
   min-height: 0;
   gap: 4px;
+}
+.vp-load-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 14, 0.78);
+  pointer-events: all;
+}
+.vp-load-card {
+  min-width: min(360px, 90vw);
+  padding: 20px 24px;
+  border-radius: 8px;
+  background: linear-gradient(#2c323c, #252a32);
+  border: 1px solid #4a5568;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.vp-load-msg {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8edf5;
+}
+.vp-load-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #141820;
+  border: 1px solid #3a4558;
+  overflow: hidden;
+}
+.vp-load-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #3d7a9a, #4a9f7a);
+  transition: width 0.12s ease-out;
+}
+.vp-load-hint {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: #8e97a6;
+  line-height: 1.45;
+}
+.vp-render-row {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 5px 8px;
+  background: rgba(25, 28, 34, 0.95);
+  border-bottom: 1px solid #2f3540;
+}
+.vp-render-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #7ec4e8;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+}
+.vp-stack-result .vp-render-title {
+  color: #e8c07e;
+}
+.dual-viewport.viewport-maximized.viewport-max-split {
+  flex-direction: row;
+  align-items: stretch;
+}
+.dual-viewport.viewport-maximized.viewport-max-split .vp-stack {
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 0;
+}
+.dual-viewport.viewport-maximized.viewport-max-single .vp-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.vp-gl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  cursor: pointer;
+  user-select: none;
+}
+.vp-gl span:first-child {
+  color: #8e97a6;
+  font-size: 10px;
+}
+.vt-sel-wide {
+  min-width: 120px;
+  max-width: 160px;
 }
 .dual-viewport.layout-only-source .vp-stack-source,
 .dual-viewport.layout-only-result .vp-stack-result {

@@ -37,6 +37,9 @@
 - **视口显示**：左右**各自**五类下拉——实体/线框/点云、光照（影棚/柔和/平铺）、贴图（采样 / 无光照 / 隐藏槽）、材质（原始 / 法线 / UV 格）、骨骼（关 / 骨架 / 权重示意色）；由 `applyViewportViewState` + `applySceneLighting` 组合应用。工具栏可对「处理前 / 处理后」视口格子**单独或同时**开关显示；**每格左上角**展示该侧独立的 **存储粗估**（CPU/VRAM 相关字节与 GL 计数摘要）。
 - **状态栏**：保留 JS 堆、**两视口合计** GPU 粗估、峰值与 WebGL 纹理对象数；**左右分侧细粒度存储估**以各视口格内左上角 HUD 为准（避免与状态栏重复）。
 - **属性面板（model-processor）**：大纲当前焦点为「处理前」时，面板顶部展示**只读**高对比提示；焦点为「处理后」时展示**可编辑**提示，避免用户对错误一侧产生可写预期。
+- **渲染与后期（model-processor 双视口）**：**每个 3D 格内**有一行「渲染与效果」（与对侧绑定同一套 reactive 状态，改一侧即双方生效）：**管线**（固定流水线 / PBR / 光追占位）、**阴影**、**HDR**（ACES）、**SSAO**（`EffectComposer` + `SSAOPass`）。`onResize` 时同步 `renderer.setPixelRatio`、`EffectComposer.setPixelRatio` + `setSize`，并对各 **canvas 外包一层** 挂 `ResizeObserver`，避免仅 flex/最大化导致尺寸变化而 **window 未触发 resize** 时后期分辨率错位。载入新网格后按当前阴影选项刷新投射体。
+- **打开模型流程**：载入入口在 **卸载当前处理前/处理后场景**、广播**空大纲**之后，再叠加**居中进度条**（glTF 走 `LoadingManager.onProgress`；OBJ 多文件同理用独立 `LoadingManager`）；结束或失败后关闭遮罩并再次触发尺寸对齐。
+- **3D 最大化**：工作台工具栏切换「3D 最大化」时隐藏左/右侧 Dock，中央区域独占横向空间；若双视口均可见则两格**横向等分**，若仅一侧可见则该格在纵向上铺满可用高度。
 - 支持 glTF 2.0 / GLB；URL 与本地文件（含 `.gltf + .bin + 贴图` 多文件映射）；查询参数 `?url=` 初始加载。
 - Maya 风格 UI：主菜单、视口菜单、Outliner panel 菜单、右侧 Attribute Editor dock。
 - Panel 数量映射：

@@ -37,6 +37,8 @@ const dupSceneRevision = ref(0)
 /** 双视口：可单独或同时显示「处理前 / 处理后」格子（至少保留一侧） */
 const showViewportSource = ref(true)
 const showViewportResult = ref(true)
+/** 仅放大中央 3D 区域（隐藏左右 Dock）；双视口时左右等分 */
+const viewportMaximized = ref(false)
 const memStats = ref({
   js: null,
   gpuEst: 0,
@@ -53,7 +55,6 @@ const lightboxMaterial = ref(null)
 const lightboxChannel = ref('rgba')
 
 const DIALOG_TITLES = {
-  'proc-preview': '预览处理结果',
   'proc-mesh': '网格简化',
   'proc-skeleton': '骨骼 / 权重简化',
   'proc-atlas': '材质贴图合并',
@@ -219,8 +220,10 @@ function onDuplicateMerge(payload) {
 function onOutlineUpdated(payload) {
   if (payload.panel === 'source') {
     sourceOutline.value = payload.outline || []
+    if (!sourceOutline.value.length) selectedSourceUuid.value = null
   } else {
     resultOutline.value = payload.outline || []
+    if (!resultOutline.value.length) selectedResultUuid.value = null
   }
 }
 
@@ -316,11 +319,6 @@ async function onPickFile(e) {
   }
 }
 
-function previewOptimize() {
-  setStatus('正在生成处理后预览…', 'loading')
-  dualRef.value?.syncResultFromSource()
-}
-
 function runPlaceholder(name) {
   setStatus(`「${name}」管线占位：后续可接入 WASM / 原生后端 / MCP`, 'ok')
 }
@@ -359,8 +357,6 @@ function openWorkspaceMenu() {
       <div class="menu-root">
         <button class="menu-btn menu-top" type="button">处理</button>
         <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-preview'">预览处理结果…</button>
-          <div class="menu-sep" />
           <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'">网格简化…</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'">骨骼 / 权重简化…</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'">材质贴图合并…</button>
@@ -406,7 +402,15 @@ function openWorkspaceMenu() {
     <div class="toolbar">
       <button type="button" class="tool-btn primary" @click="openFiles">打开</button>
       <button type="button" class="tool-btn" @click="dualRef?.resetCameras?.()">重置相机</button>
-      <button type="button" class="tool-btn accent" @click="previewOptimize">预览处理结果</button>
+      <button
+        type="button"
+        class="tool-btn"
+        :class="{ 'tool-btn-active': viewportMaximized }"
+        :title="viewportMaximized ? '恢复左右栏布局' : '仅最大化中央 3D（单侧铺满 / 双视口左右等分）'"
+        @click="viewportMaximized = !viewportMaximized"
+      >
+        3D 最大化
+      </button>
       <div class="toolbar-vp" title="控制中央双视口是否显示；大纲仍可分别浏览两侧">
         <label class="toolbar-cb"
           ><input v-model="showViewportSource" type="checkbox" /> 显示处理前</label
@@ -431,7 +435,7 @@ function openWorkspaceMenu() {
       />
     </div>
 
-    <div class="main-row">
+    <div class="main-row" :class="{ 'viewport-max-mode': viewportMaximized }">
       <aside class="left-dock">
         <SceneOutliner
           title="大纲 · 处理前"
@@ -456,6 +460,7 @@ function openWorkspaceMenu() {
           ref="dualRef"
           :show-source="showViewportSource"
           :show-result="showViewportResult"
+          :viewport-maximized="viewportMaximized"
           @viewer-error="onViewerError"
           @status="onDualStatus"
           @source-loaded="onSourceLoaded"
@@ -491,14 +496,7 @@ function openWorkspaceMenu() {
           <button type="button" class="modal-close" @click="activeDialog = ''">×</button>
         </header>
         <div class="modal-body">
-          <template v-if="activeDialog === 'proc-preview'">
-            <p class="modal-hint">生成右侧「处理后」预览（克隆源网格）。以下为管线占位。</p>
-            <div class="btn-row">
-              <button type="button" class="tool-btn accent" @click="previewOptimize(); activeDialog = ''">执行预览</button>
-            </div>
-          </template>
-
-          <template v-else-if="activeDialog === 'proc-mesh'">
+          <template v-if="activeDialog === 'proc-mesh'">
             <p class="modal-hint">网格简化参数（占位，可接入 WASM / 后端）。</p>
             <label class="field">
               <span>目标三角面比例</span>
@@ -965,6 +963,10 @@ function openWorkspaceMenu() {
 .tool-btn.accent {
   background: linear-gradient(#3d7a5c, #2f6349);
 }
+.tool-btn-active {
+  border-color: #6b9fe0 !important;
+  box-shadow: 0 0 0 1px rgba(107, 159, 224, 0.35);
+}
 .toolbar-gap {
   flex: 1 1 20px;
   min-width: 8px;
@@ -1017,6 +1019,14 @@ function openWorkspaceMenu() {
   min-height: 0;
   display: flex;
   overflow: hidden;
+}
+.main-row.viewport-max-mode .left-dock,
+.main-row.viewport-max-mode .right-dock {
+  display: none;
+}
+.main-row.viewport-max-mode .center {
+  flex: 1 1 auto;
+  max-width: 100%;
 }
 .left-dock {
   width: 260px;

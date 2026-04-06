@@ -66,8 +66,9 @@ function build() {
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
     scene = new THREE.Scene()
-    camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10)
-    camera.position.set(0, 0.15, 2.2)
+    camera = new THREE.PerspectiveCamera(42, 1, 0.1, 10)
+    camera.position.set(0, 0, 2.55)
+    camera.lookAt(0, 0, 0)
     const amb = new THREE.AmbientLight(0xffffff, 0.4)
     scene.add(amb)
     const d = new THREE.DirectionalLight(0xffffff, 1.05)
@@ -82,7 +83,7 @@ function build() {
   } catch {
     mat = new THREE.MeshStandardMaterial({ color: 0x888888 })
   }
-  mesh = new THREE.Mesh(new THREE.SphereGeometry(0.85, 48, 48), mat)
+  mesh = new THREE.Mesh(new THREE.SphereGeometry(0.68, 48, 48), mat)
   mesh.rotation.x = rotX
   mesh.rotation.y = rotY
   scene.add(mesh)
@@ -158,6 +159,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .mat-preview-canvas {
   display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
   max-width: 100%;
   border-radius: 4px;
   border: 1px solid #4a5568;
