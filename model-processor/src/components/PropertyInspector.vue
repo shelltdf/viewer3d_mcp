@@ -19,7 +19,9 @@ import { sanitizeTangentAttribute, vertexAttrDisplayName } from '../utils/vertex
 import {
   refreshGeometryBounds,
   syncMaterialsVertexTangentsFromGeometry,
+  syncStandardMaterialsForNormalMap,
 } from '../utils/meshTangentMaterialSync.js'
+import { applyTextureColorSpaceForMaterialSlot } from '../utils/materialTextureSlots.js'
 
 const props = defineProps({
   /** @type {any} */
@@ -246,6 +248,7 @@ function slotClearClick() {
   if (!m[key]?.isTexture) return
   m[key] = null
   m.needsUpdate = true
+  emit('action', { type: 'material-updated', material: m, panel: props.selectionPanel })
 }
 
 async function onSlotImagePicked(e) {
@@ -260,10 +263,10 @@ async function onSlotImagePicked(e) {
   try {
     const tex = await new THREE.TextureLoader().loadAsync(url)
     tex.name = file.name
-    tex.colorSpace = THREE.SRGBColorSpace
-    tex.needsUpdate = true
+    applyTextureColorSpaceForMaterialSlot(tex, key)
     m[key] = tex
     m.needsUpdate = true
+    emit('action', { type: 'material-updated', material: m, panel: props.selectionPanel })
   } catch (err) {
     emit('action', {
       type: 'inspector-status',
@@ -398,7 +401,10 @@ function onEnsureTangents() {
     g.computeTangents()
     sanitizeTangentAttribute(g)
     refreshGeometryBounds(g)
-    if (meshObj && (meshObj.isMesh || meshObj.isSkinnedMesh)) syncMaterialsVertexTangentsFromGeometry(meshObj)
+    if (meshObj && (meshObj.isMesh || meshObj.isSkinnedMesh)) {
+      syncMaterialsVertexTangentsFromGeometry(meshObj)
+      syncStandardMaterialsForNormalMap(meshObj)
+    }
     const ta = g.getAttribute('tangent')
     if (ta) ta.needsUpdate = true
     geometryInspectTick.value++

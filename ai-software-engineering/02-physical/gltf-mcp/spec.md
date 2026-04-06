@@ -44,6 +44,8 @@
 - **打开模型流程**：载入入口在 **卸载当前处理前/处理后场景**、广播**空大纲**之后，再叠加**居中进度条**（glTF 走 `LoadingManager.onProgress`；OBJ 多文件同理用独立 `LoadingManager`）；结束或失败后关闭遮罩并再次触发尺寸对齐。
 - **3D 最大化**：工作台工具栏切换「3D 最大化」时隐藏左/右侧 Dock，中央区域独占横向空间；若双视口均可见则两格**横向等分**，若仅一侧可见则该格在纵向上铺满可用高度。
 - **联动观察**：仅**相机**可选同步（`linkCameras` 在工作台工具栏）；与「渲染与效果」、显示类下拉无关。
+- **材质槽导入（属性面板）**：按槽位设置 `Texture.colorSpace`——**法线 / 粗糙度 / 金属度 / AO / bump 等数据贴图**用 `NoColorSpace`，**map / emissiveMap** 等用 `sRGB`；法线图若误用 sRGB 会解码错误，表现为光照**折线、不连续**。导入或清除槽位后对引用该材质的网格做 **`vertexTangents`（有几何 `tangent` 时）** 与 **`flatShading=false`（有法线贴图时）** 等与法线管线一致的同步；**贴图槽变更后立即对该侧视口调用 `refreshOutline`**，使大纲中「材质 / 贴图」节计数与列表与场景一致。
+- **辅助地面（工具栏）**：可选「**辅助地面**」：`DualViewport` 在每侧 `Scene` 中、与根模型并列添加 **`CircleGeometry` 圆片** + **`MeshStandardMaterial`（`#cccccc` 约 80% 灰）**，置于该侧根节点包围盒 **底面略下方**，**仅 `receiveShadow`**，半径随包围盒尺度估算，便于无环境地平面时观察**平行光阴影**；关闭或卸载模型时移除并 `dispose` 几何与材质。
 - **视口角落统计**：各 3D 格左上角除存储粗估外，展示该侧场景的 **三角面 / 顶点 / Mesh / 唯一材质数 / 唯一贴图槽实例数**（与 WebGL `info.memory` 几何/纹理计数分列）。
 - 支持 glTF 2.0 / GLB；URL 与本地文件（含 `.gltf + .bin + 贴图` 多文件映射）；查询参数 `?url=` 初始加载。
 - Maya 风格 UI：主菜单、视口菜单、Outliner panel 菜单、右侧 Attribute Editor dock。

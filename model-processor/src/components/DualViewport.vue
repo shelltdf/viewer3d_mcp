@@ -36,6 +36,10 @@ import {
 } from '../utils/displayModeHelpers.js'
 import { deepCloneMeshGeometries, isolateResultBranchResources } from '../utils/isolateResultResources.js'
 import { applyRendererToneAndPipeline, applyDualViewportShadows } from '../utils/viewportRenderSettings.js'
+import {
+  syncMaterialsVertexTangentsFromGeometry,
+  syncStandardMaterialsForNormalMap,
+} from '../utils/meshTangentMaterialSync.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
@@ -47,6 +51,8 @@ const props = defineProps({
   showResult: { type: Boolean, default: true },
   /** 由工作台切换：隐藏左右 Dock 并放大中央视口；双视口时左右等分，单视口时单格铺满 */
   viewportMaximized: { type: Boolean, default: false },
+  /** 在每侧场景根物体下追加圆形辅助地面（便于观察平行光阴影） */
+  helperGround: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -319,6 +325,94 @@ function rebuildPostProcess() {
   }
 }
 
+function updateHelperGroundShadowFlags() {
+  const setRecv = (scene, on) => {
+    if (!scene) return
+    for (const c of scene.children) {
+      if (c.userData?.__workbenchHelperGround) c.receiveShadow = on
+    }
+  }
+  setRecv(sceneA, renderSettingsSource.value.shadow === 'on')
+  setRecv(sceneB, renderSettingsResult.value.shadow === 'on')
+}
+
+function removeWorkbenchHelperGrounds(scene) {
+  if (!scene) return
+  const rm = []
+  for (const c of scene.children) {
+    if (c.userData?.__workbenchHelperGround) rm.push(c)
+  }
+  for (const c of rm) {
+    scene.remove(c)
+    c.geometry?.dispose?.()
+    const mats = Array.isArray(c.material) ? c.material : [c.material]
+    for (const m of mats) m?.dispose?.()
+  }
+}
+
+/**
+ * @param {import('three').Object3D | null} root
+ * @param {boolean} shadowOn
+ */
+function createHelperGroundMesh(root, shadowOn) {
+  if (!root) return null
+  const box = new THREE.Box3().setFromObject(root)
+  if (box.isEmpty()) return null
+  const size = box.getSize(new THREE.Vector3())
+  const center = box.getCenter(new THREE.Vector3())
+  const horizontal = Math.max(size.x, size.z, 1e-6)
+  const radius = Math.max(
+    horizontal * 0.65,
+    Math.hypot(size.x, size.z) * 0.42,
+    size.y * 0.55,
+    2,
+  )
+  const geo = new THREE.CircleGeometry(radius, 96)
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xcccccc,
+    roughness: 0.9,
+    metalness: 0,
+  })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.rotation.x = -Math.PI / 2
+  const eps = Math.max(0.0005 * size.y, 0.002)
+  mesh.position.set(center.x, box.min.y - eps, center.z)
+  mesh.receiveShadow = !!shadowOn
+  mesh.castShadow = false
+  mesh.userData.__workbenchHelperGround = true
+  mesh.name = 'WorkbenchHelperGround'
+  return mesh
+}
+
+function refreshHelperGrounds() {
+  if (!sceneA || !sceneB) return
+  removeWorkbenchHelperGrounds(sceneA)
+  removeWorkbenchHelperGrounds(sceneB)
+  if (!props.helperGround) return
+  const shA = renderSettingsSource.value.shadow === 'on'
+  const shB = renderSettingsResult.value.shadow === 'on'
+  const gA = createHelperGroundMesh(sourceRoot, shA)
+  if (gA) sceneA.add(gA)
+  const gB = createHelperGroundMesh(resultRoot, shB)
+  if (gB) sceneB.add(gB)
+}
+
+function syncMeshesUsingMaterial(material) {
+  if (!material) return
+  const visit = (root) => {
+    if (!root) return
+    root.traverse((o) => {
+      if (!o.isMesh && !o.isSkinnedMesh) return
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      if (!mats.includes(material)) return
+      syncMaterialsVertexTangentsFromGeometry(o)
+      syncStandardMaterialsForNormalMap(o)
+    })
+  }
+  visit(sourceRoot)
+  visit(resultRoot)
+}
+
 function applyGlobalRendererSettings() {
   const rsA = renderSettingsSource.value
   const rsB = renderSettingsResult.value
@@ -334,6 +428,7 @@ function applyGlobalRendererSettings() {
     rendererB,
     rsB.shadow === 'on' ? 'on' : 'off',
   )
+  updateHelperGroundShadowFlags()
   rebuildPostProcess()
 }
 
@@ -413,6 +508,7 @@ function clearSource() {
     sourceRoot = undefined
   }
   vertexAttrNamesSource.value = []
+  refreshHelperGrounds()
 }
 
 function clearResult() {
@@ -428,6 +524,7 @@ function clearResult() {
   }
   statsResult.value = { meshes: 0, triangles: 0, vertices: 0 }
   vertexAttrNamesResult.value = []
+  refreshHelperGrounds()
 }
 
 function applyObject3DToSource(object) {
@@ -450,6 +547,7 @@ function applyObject3DToSource(object) {
     clips: [],
   })
   syncResultFromSource({ skipStatus: true })
+  refreshHelperGrounds()
 }
 
 function applyGltfToSource(gltf) {
@@ -478,6 +576,7 @@ function applyGltfToSource(gltf) {
     clips: sourceClips,
   })
   syncResultFromSource({ skipStatus: true })
+  refreshHelperGrounds()
 }
 
 function urlModifierFromFileMap(map) {
@@ -634,6 +733,7 @@ function syncResultFromSource(opts = {}) {
     if (!opts.skipStatus) emit('status', '已生成处理后预览（网格克隆）')
     refreshVertexAttrNameLists()
     applyGlobalRendererSettings()
+    refreshHelperGrounds()
     onResize()
   } catch (e) {
     emit('viewer-error', e?.message || String(e))
@@ -713,6 +813,11 @@ watch(
     onResize()
   },
   { deep: true },
+)
+
+watch(
+  () => props.helperGround,
+  () => refreshHelperGrounds(),
 )
 
 function maybeRaytraceHint(pipeline) {
@@ -1156,6 +1261,8 @@ defineExpose({
   applyDuplicateMerges,
   refreshVertexAttrNameLists,
   afterResultGeometryMutation,
+  syncMeshesUsingMaterial,
+  refreshOutline,
   linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)

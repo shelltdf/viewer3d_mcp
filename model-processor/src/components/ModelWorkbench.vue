@@ -56,6 +56,8 @@ const showViewportSource = ref(true)
 const showViewportResult = ref(true)
 /** 仅放大中央 3D 区域（隐藏左右 Dock）；双视口时左右等分 */
 const viewportMaximized = ref(false)
+/** 每侧场景添加圆形浅灰地面，便于显示平行光阴影 */
+const helperGroundEnabled = ref(false)
 const memStats = ref({
   js: null,
   gpuEst: 0,
@@ -201,6 +203,10 @@ function onInspectorAction(e) {
     dualRef.value?.refreshVertexAttrNameLists?.()
     dualRef.value?.afterResultGeometryMutation?.()
     setStatus('已更新网格顶点属性（下拉列表已刷新）', 'ok')
+  } else if (e?.type === 'material-updated' && e.material) {
+    dualRef.value?.syncMeshesUsingMaterial?.(e.material)
+    const panel = e.panel === 'source' || e.panel === 'result' ? e.panel : focusPanel.value
+    dualRef.value?.refreshOutline?.(panel)
   } else if (e?.type === 'inspector-status') {
     const msg = e.message || ''
     setStatus(msg, e.level === 'error' ? 'error' : 'ok')
@@ -454,6 +460,13 @@ function openWorkspaceMenu() {
         <input v-model="linkCamerasLinked" type="checkbox" />
         联动观察
       </label>
+      <label
+        class="toolbar-cb toolbar-cb-wide"
+        title="在处理前/处理后场景中各放置一块与模型尺度匹配的圆形浅灰地面（MeshStandard ~80% 灰），仅接收阴影，便于观察平行光阴影"
+      >
+        <input v-model="helperGroundEnabled" type="checkbox" />
+        辅助地面
+      </label>
       <div class="toolbar-vp" title="控制中央双视口是否显示；大纲仍可分别浏览两侧">
         <label class="toolbar-cb"
           ><input v-model="showViewportSource" type="checkbox" /> 显示处理前</label
@@ -504,6 +517,7 @@ function openWorkspaceMenu() {
           :show-source="showViewportSource"
           :show-result="showViewportResult"
           :viewport-maximized="viewportMaximized"
+          :helper-ground="helperGroundEnabled"
           @viewer-error="onViewerError"
           @status="onDualStatus"
           @source-loaded="onSourceLoaded"
