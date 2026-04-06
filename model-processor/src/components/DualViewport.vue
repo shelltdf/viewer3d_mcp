@@ -41,6 +41,11 @@ import {
   syncMaterialsVertexTangentsFromGeometry,
   syncStandardMaterialsForNormalMap,
 } from '../utils/meshTangentMaterialSync.js'
+import {
+  meshoptSimplifierReady,
+  isMeshoptSimplifySupported,
+  applyMeshoptSimplifyToGeometry,
+} from '../utils/meshoptSimplifyGeometry.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
@@ -1304,6 +1309,68 @@ function applyDuplicateMerges(payload) {
   return { textureMerged, materialMerged, nodesRemoved, groupsApplied: ops.length }
 }
 
+/**
+ * 对「处理后」场景中所有 Mesh / SkinnedMesh 的 BufferGeometry 做 meshoptimizer WASM 简化。
+ * @param {{ ratio: number, algorithm: string, lockBorder: boolean }} opts
+ */
+async function simplifyResultMeshes(opts) {
+  await meshoptSimplifierReady()
+  if (!isMeshoptSimplifySupported()) {
+    throw new Error('当前环境不支持 meshoptimizer WASM（需启用 WebAssembly）')
+  }
+  if (!resultRoot) throw new Error('请先加载模型并确保存在「处理后」场景')
+
+  const skipped = []
+  let meshes = 0
+  let triBefore = 0
+  let triAfter = 0
+
+  const candidates = []
+  resultRoot.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const g = obj.geometry
+    if (!g || !g.isBufferGeometry) return
+    candidates.push({ obj, g })
+  })
+
+  for (const { obj, g } of candidates) {
+    try {
+      if (g.groups && g.groups.length > 1) {
+        skipped.push(`${obj.name || obj.uuid}: 多材质 groups（未处理）`)
+        continue
+      }
+      if (g.morphAttributes && Object.keys(g.morphAttributes).length > 0) {
+        skipped.push(`${obj.name || obj.uuid}: 含 morph 目标（未处理）`)
+        continue
+      }
+      const pos = g.getAttribute('position')
+      if (!pos) {
+        skipped.push(`${obj.name || obj.uuid}: 无 position`)
+        continue
+      }
+      const idx = g.index
+      const tb = idx ? idx.count / 3 : pos.count / 3
+      const r = await applyMeshoptSimplifyToGeometry(g, opts)
+      triBefore += tb
+      triAfter += r.trianglesAfter
+      meshes++
+    } catch (e) {
+      skipped.push(`${obj.name || obj.uuid}: ${e?.message || String(e)}`)
+    }
+  }
+
+  afterResultGeometryMutation()
+  refreshOutline('result')
+  refreshVertexAttrNameLists()
+  emit('result-updated', {
+    outline: buildRichOutline(resultRoot, { clips: resultClips }),
+    animations: resultClips.length,
+    clips: resultClips,
+  })
+
+  return { meshes, triBefore, triAfter, skipped }
+}
+
 defineExpose({
   loadUrl,
   loadFiles,
@@ -1318,6 +1385,7 @@ defineExpose({
   afterResultGeometryMutation,
   syncMeshesUsingMaterial,
   refreshOutline,
+  simplifyResultMeshes,
   linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import DualViewport from './DualViewport.vue'
 import SceneOutliner from './SceneOutliner.vue'
 import PropertyInspector from './PropertyInspector.vue'
@@ -420,64 +420,174 @@ function meshAlgoShortLabel() {
   return key ? t(key) : meshSimplifyAlgorithm.value
 }
 
-function runMeshSimplify() {
-  setStatus(
-    `「${t('dlgMesh')}」${meshAlgoShortLabel()} · ${t('meshTargetRatio')}=${meshTargetRatio.value.toFixed(2)} — ${t('dlgPlaceholderLead')}`,
-    'ok',
-  )
+async function runMeshSimplify() {
+  setStatus(`meshoptimizer WASM · ${meshAlgoShortLabel()}…`, 'loading')
+  try {
+    const fn = dualRef.value?.simplifyResultMeshes
+    if (typeof fn !== 'function') throw new Error('视口未就绪')
+    const r = await fn({
+      ratio: meshTargetRatio.value,
+      algorithm: meshSimplifyAlgorithm.value,
+      lockBorder: meshPreserveBorder.value,
+    })
+    const skipMsg =
+      r.skipped?.length > 0
+        ? locale.value === 'zh'
+          ? `；跳过 ${r.skipped.length} 项`
+          : `; skipped ${r.skipped.length}`
+        : ''
+    setStatus(
+      locale.value === 'zh'
+        ? `meshoptimizer：已处理 ${r.meshes} 个网格，三角面 ${r.triBefore} → ${r.triAfter}${skipMsg}`
+        : `meshoptimizer: ${r.meshes} mesh(es), triangles ${r.triBefore} → ${r.triAfter}${skipMsg}`,
+      'ok',
+    )
+  } catch (e) {
+    setStatus(e?.message || String(e), 'error')
+  }
   activeDialog.value = ''
 }
+
+/** 当前展开的主菜单 id；仅点击展开，hover 不展开 */
+const openMenuId = ref(/** @type {string | null} */ (null))
+
+function toggleMenu(id) {
+  openMenuId.value = openMenuId.value === id ? null : id
+}
+
+function closeMenu() {
+  openMenuId.value = null
+}
+
+function onMenubarPointerDownOutsideMenus(e) {
+  const t = e.target
+  if (!(t instanceof Element)) return
+  if (t.closest('.menu-pop') || t.closest('.menu-btn')) return
+  closeMenu()
+}
+
+function onDocumentPointerDown(e) {
+  const t = e.target
+  if (!(t instanceof Element)) return
+  if (t.closest('.menubar')) return
+  closeMenu()
+}
+
+function onDocumentKeydown(e) {
+  if (e.key === 'Escape') closeMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  document.removeEventListener('keydown', onDocumentKeydown)
+})
 </script>
 
 <template>
   <div class="workbench" :data-shell-theme="resolvedTheme">
-    <nav class="menubar">
+    <div class="title-bar">
+      <span class="title-app">{{ t('titleApp') }}</span>
+      <span class="title-sep">{{ t('titleSep') }}</span>
+      <span class="title-workspace" :title="workspaceTitle">{{ workspaceTitle }}</span>
+    </div>
+
+    <nav class="menubar" @pointerdown.self="onMenubarPointerDownOutsideMenus">
       <div class="menu-root">
-        <button class="menu-btn" type="button">{{ t('menuFile') }}</button>
-        <div class="menu-pop">
-          <button class="menu-item" type="button" @click="openFiles">{{ t('fileOpenModel') }}</button>
-          <button class="menu-item" type="button" @click="openUrlModal">{{ t('fileOpenFromUrl') }}</button>
+        <button
+          class="menu-btn"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'file' }"
+          :aria-expanded="openMenuId === 'file'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('file')"
+        >
+          {{ t('menuFile') }}
+        </button>
+        <div class="menu-pop" :class="{ 'is-open': openMenuId === 'file' }">
+          <button class="menu-item" type="button" @click="openFiles(); closeMenu()">{{ t('fileOpenModel') }}</button>
+          <button class="menu-item" type="button" @click="openUrlModal(); closeMenu()">{{ t('fileOpenFromUrl') }}</button>
           <div class="menu-sep" />
-          <button class="menu-item" type="button" @click="runPlaceholder('导出 glTF')">{{ t('fileExportGltf') }}</button>
+          <button class="menu-item" type="button" @click="runPlaceholder('导出 glTF'); closeMenu()">{{ t('fileExportGltf') }}</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">{{ t('menuProcess') }}</button>
-        <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'">{{ t('dlgMesh') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'">{{ t('dlgSkeleton') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'">{{ t('dlgAtlas') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-pbr'">{{ t('dlgPbr') }}…</button>
+        <button
+          class="menu-btn menu-top"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'process' }"
+          :aria-expanded="openMenuId === 'process'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('process')"
+        >
+          {{ t('menuProcess') }}
+        </button>
+        <div class="menu-pop menu-pop-wide" :class="{ 'is-open': openMenuId === 'process' }">
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'; closeMenu()">{{ t('dlgMesh') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'; closeMenu()">{{ t('dlgSkeleton') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'; closeMenu()">{{ t('dlgAtlas') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-pbr'; closeMenu()">{{ t('dlgPbr') }}…</button>
           <div class="menu-sep" />
-          <button class="menu-item" type="button" @click="showDuplicateModal = true">{{ t('menuDuplicateResources') }}</button>
+          <button class="menu-item" type="button" @click="showDuplicateModal = true; closeMenu()">{{ t('menuDuplicateResources') }}</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">{{ t('menuBake') }}</button>
-        <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'bake-light'">{{ t('dlgBakeLight') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'bake-tex'">{{ t('dlgBakeTex') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'bake-vertex'">{{ t('dlgBakeVertex') }}…</button>
+        <button
+          class="menu-btn menu-top"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'bake' }"
+          :aria-expanded="openMenuId === 'bake'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('bake')"
+        >
+          {{ t('menuBake') }}
+        </button>
+        <div class="menu-pop menu-pop-wide" :class="{ 'is-open': openMenuId === 'bake' }">
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-light'; closeMenu()">{{ t('dlgBakeLight') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-tex'; closeMenu()">{{ t('dlgBakeTex') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-vertex'; closeMenu()">{{ t('dlgBakeVertex') }}…</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">{{ t('menuTools') }}</button>
-        <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-tiles'">{{ t('dlgTiles') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-mesh2pc'">{{ t('dlgMesh2pc') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc'">{{ t('dlgPc') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc2mesh'">{{ t('dlgPc2mesh') }}…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-gaussian'">{{ t('dlgGaussian') }}…</button>
+        <button
+          class="menu-btn menu-top"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'tools' }"
+          :aria-expanded="openMenuId === 'tools'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('tools')"
+        >
+          {{ t('menuTools') }}
+        </button>
+        <div class="menu-pop menu-pop-wide" :class="{ 'is-open': openMenuId === 'tools' }">
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-tiles'; closeMenu()">{{ t('dlgTiles') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-mesh2pc'; closeMenu()">{{ t('dlgMesh2pc') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc'; closeMenu()">{{ t('dlgPc') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc2mesh'; closeMenu()">{{ t('dlgPc2mesh') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-gaussian'; closeMenu()">{{ t('dlgGaussian') }}…</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">{{ t('menuLanguage') }}</button>
-        <div class="menu-pop">
+        <button
+          class="menu-btn menu-top"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'lang' }"
+          :aria-expanded="openMenuId === 'lang'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('lang')"
+        >
+          {{ t('menuLanguage') }}
+        </button>
+        <div class="menu-pop" :class="{ 'is-open': openMenuId === 'lang' }">
           <button
             class="menu-item menu-check"
             :class="{ checked: locale === 'zh' }"
             type="button"
-            @click="setLocale('zh')"
+            @click="setLocale('zh'); closeMenu()"
           >
             {{ t('langZh') }}
           </button>
@@ -485,20 +595,29 @@ function runMeshSimplify() {
             class="menu-item menu-check"
             :class="{ checked: locale === 'en' }"
             type="button"
-            @click="setLocale('en')"
+            @click="setLocale('en'); closeMenu()"
           >
             {{ t('langEn') }}
           </button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">{{ t('menuTheme') }}</button>
-        <div class="menu-pop">
+        <button
+          class="menu-btn menu-top"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'theme' }"
+          :aria-expanded="openMenuId === 'theme'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('theme')"
+        >
+          {{ t('menuTheme') }}
+        </button>
+        <div class="menu-pop" :class="{ 'is-open': openMenuId === 'theme' }">
           <button
             class="menu-item menu-check"
             :class="{ checked: themeMode === 'system' }"
             type="button"
-            @click="setThemeMode('system')"
+            @click="setThemeMode('system'); closeMenu()"
           >
             {{ t('themeSystem') }}
           </button>
@@ -506,7 +625,7 @@ function runMeshSimplify() {
             class="menu-item menu-check"
             :class="{ checked: themeMode === 'light' }"
             type="button"
-            @click="setThemeMode('light')"
+            @click="setThemeMode('light'); closeMenu()"
           >
             {{ t('themeLight') }}
           </button>
@@ -514,27 +633,30 @@ function runMeshSimplify() {
             class="menu-item menu-check"
             :class="{ checked: themeMode === 'dark' }"
             type="button"
-            @click="setThemeMode('dark')"
+            @click="setThemeMode('dark'); closeMenu()"
           >
             {{ t('themeDark') }}
           </button>
         </div>
       </div>
-      <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu">{{ t('workspaceBtn') }}</button>
-      <button class="menu-btn menu-top" type="button" @click="showMemoryModal = true">{{ t('memoryBtn') }}</button>
+      <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu(); closeMenu()">{{ t('workspaceBtn') }}</button>
+      <button class="menu-btn menu-top" type="button" @click="showMemoryModal = true; closeMenu()">{{ t('memoryBtn') }}</button>
       <div class="menu-root">
-        <button class="menu-btn" type="button">{{ t('menuHelp') }}</button>
-        <div class="menu-pop">
+        <button
+          class="menu-btn"
+          type="button"
+          :class="{ 'menu-btn-open': openMenuId === 'help' }"
+          :aria-expanded="openMenuId === 'help'"
+          aria-haspopup="true"
+          @click.stop="toggleMenu('help')"
+        >
+          {{ t('menuHelp') }}
+        </button>
+        <div class="menu-pop" :class="{ 'is-open': openMenuId === 'help' }">
           <span class="menu-hint">{{ t('helpHint') }}</span>
         </div>
       </div>
     </nav>
-
-    <div class="title-bar">
-      <span class="title-app">{{ t('titleApp') }}</span>
-      <span class="title-sep">{{ t('titleSep') }}</span>
-      <span class="title-workspace" :title="workspaceTitle">{{ workspaceTitle }}</span>
-    </div>
 
     <div class="toolbar">
       <button type="button" class="tool-btn primary" @click="openFiles">{{ t('toolbarOpen') }}</button>
@@ -650,7 +772,7 @@ function runMeshSimplify() {
                 <option v-for="opt in meshAlgorithmOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
               </select>
             </label>
-            <p class="modal-hint sub-hint">{{ t('dlgPlaceholderLead') }}</p>
+            <p class="modal-hint sub-hint">{{ t('meshFinePrint') }}</p>
             <label class="field">
               <span>{{ t('meshTargetRatio') }}</span>
               <input v-model.number="meshTargetRatio" type="range" min="0.05" max="1" step="0.05" />
@@ -1003,6 +1125,11 @@ function runMeshSimplify() {
   border-color: #8b96a8;
   background: #fff;
 }
+.workbench[data-shell-theme='light'] .menu-btn.menu-btn-open {
+  border-color: #5b8fc7;
+  background: #d4e4f7;
+  color: #0f172a;
+}
 .workbench[data-shell-theme='light'] .menu-pop {
   background: linear-gradient(#fafbfc, #eef0f4);
   border-color: #aeb6c4;
@@ -1118,6 +1245,7 @@ function runMeshSimplify() {
   padding: 4px 8px;
   background: linear-gradient(#3a3a3a, #2f2f2f);
   border-bottom: 1px solid #222;
+  user-select: none;
 }
 .menu-top {
   margin-right: 2px;
@@ -1131,6 +1259,7 @@ function runMeshSimplify() {
   font-size: 12px;
   background: linear-gradient(#2e3238, #262a30);
   border-bottom: 1px solid #1a1d22;
+  border-top: 1px solid #3a4048;
   color: #aeb6c4;
 }
 .title-app {
@@ -1275,8 +1404,12 @@ function runMeshSimplify() {
   border-color: #616161;
   background: #454545;
 }
-.menu-root:hover .menu-pop,
-.menu-root:focus-within .menu-pop {
+.menu-btn.menu-btn-open {
+  border-color: #6e7a8f;
+  background: #3a4350;
+  color: #e9f2ff;
+}
+.menu-pop.is-open {
   display: block;
 }
 .menu-pop {

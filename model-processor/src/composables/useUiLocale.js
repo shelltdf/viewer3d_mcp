@@ -81,9 +81,11 @@ const MESSAGES = {
     meshAlgoCluster: '顶点聚类（快速，质量较低）',
     meshAlgoIncremental: '增量式简化（多轮边折叠）',
     meshAlgoAttribute: '属性感知（保护 UV / 切线 / 顶点色）',
-    meshHint: '以下为常见网格减面思路；实际计算需接入 meshoptimizer、OpenMesh、CGAL 等库或后端。',
+    meshHint:
+      '使用 npm「meshoptimizer」内置 WASM：作用于右侧「处理后」场景中全部 Mesh / SkinnedMesh。qem / incremental 为 simplify；cluster 为 simplifySloppy；属性感知为 simplifyWithAttributes（需法线/UV）。',
     meshTargetRatio: '目标三角面比例',
     meshPreserveBorder: '保护边界',
+    meshFinePrint: '含多材质 groups 或 morph 的网格会跳过；不修改左侧「处理前」场景。',
     meshRun: '运行网格简化',
     statusReady: '就绪',
     mergeLeadHtml:
@@ -209,9 +211,10 @@ const MESSAGES = {
     meshAlgoIncremental: 'Incremental simplification',
     meshAlgoAttribute: 'Attribute-aware (UV / tangents / colors)',
     meshHint:
-      'Common decimation approaches; execution needs meshoptimizer, OpenMesh, CGAL, or a service.',
+      'Uses meshoptimizer (npm) WASM on all Mesh / SkinnedMesh in the result scene. qem & incremental → simplify; cluster → simplifySloppy; attribute-aware → simplifyWithAttributes (needs normals / UVs).',
     meshTargetRatio: 'Target triangle ratio',
     meshPreserveBorder: 'Preserve borders',
+    meshFinePrint: 'Skips multi-material groups and morph targets. Source scene is unchanged.',
     meshRun: 'Run simplification',
     statusReady: 'Ready',
     mergeLeadHtml:
