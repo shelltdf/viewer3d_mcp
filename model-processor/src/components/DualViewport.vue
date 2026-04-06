@@ -33,6 +33,7 @@ import {
   clearSkeletonHelpers,
   collectVertexAttributeNamesForDebug,
   vertexAttrDisplayName,
+  TEXTURE_PREVIEW_SLOT_KEYS,
 } from '../utils/displayModeHelpers.js'
 import { deepCloneMeshGeometries, isolateResultBranchResources } from '../utils/isolateResultResources.js'
 import { applyRendererToneAndPipeline, applyDualViewportShadows } from '../utils/viewportRenderSettings.js'
@@ -120,13 +121,13 @@ const hudExpandedResult = ref(true)
 const renderSettingsSource = ref({
   pipeline: 'pbr',
   shadow: 'off',
-  hdr: 'on',
+  toneMapping: 'aces',
   ssao: 'off',
 })
 const renderSettingsResult = ref({
   pipeline: 'pbr',
   shadow: 'off',
-  hdr: 'on',
+  toneMapping: 'aces',
   ssao: 'off',
 })
 const vertexAttrNamesSource = ref([])
@@ -321,10 +322,11 @@ function rebuildPostProcess() {
   const prA = rendererA.getPixelRatio()
   const prB = rendererB.getPixelRatio()
 
-  if (rsA.ssao === 'on' && wA && hA) {
+  if ((rsA.ssao === 'on' || rsA.ssao === 'only') && wA && hA) {
     composerA = new EffectComposer(rendererA)
     composerA.addPass(new RenderPass(sceneA, cameraA))
     ssaoPassA = new SSAOPass(sceneA, cameraA, wA, hA)
+    ssaoPassA.output = rsA.ssao === 'only' ? SSAOPass.OUTPUT.SSAO : SSAOPass.OUTPUT.Default
     composerA.addPass(ssaoPassA)
     composerA.addPass(new OutputPass())
     applySsaoWorldScale(ssaoPassA, sourceRoot)
@@ -332,10 +334,11 @@ function rebuildPostProcess() {
     composerA.setSize(wA, hA)
   }
 
-  if (rsB.ssao === 'on' && wB && hB) {
+  if ((rsB.ssao === 'on' || rsB.ssao === 'only') && wB && hB) {
     composerB = new EffectComposer(rendererB)
     composerB.addPass(new RenderPass(sceneB, cameraB))
     ssaoPassB = new SSAOPass(sceneB, cameraB, wB, hB)
+    ssaoPassB.output = rsB.ssao === 'only' ? SSAOPass.OUTPUT.SSAO : SSAOPass.OUTPUT.Default
     composerB.addPass(ssaoPassB)
     composerB.addPass(new OutputPass())
     applySsaoWorldScale(ssaoPassB, resultRoot)
@@ -455,8 +458,8 @@ function syncMeshesUsingMaterial(material) {
 function applyGlobalRendererSettings() {
   const rsA = renderSettingsSource.value
   const rsB = renderSettingsResult.value
-  applyRendererToneAndPipeline(rendererA, rsA.pipeline, rsA.hdr === 'on')
-  applyRendererToneAndPipeline(rendererB, rsB.pipeline, rsB.hdr === 'on')
+  applyRendererToneAndPipeline(rendererA, rsA.pipeline, rsA.toneMapping)
+  applyRendererToneAndPipeline(rendererB, rsB.pipeline, rsB.toneMapping)
   applyDualViewportShadows(
     sceneA,
     sourceRoot,
@@ -1107,8 +1110,10 @@ function animate() {
       },
     })
   }
-  const useCompA = composerA && renderSettingsSource.value.ssao === 'on'
-  const useCompB = composerB && renderSettingsResult.value.ssao === 'on'
+  const ssaoA = renderSettingsSource.value.ssao
+  const ssaoB = renderSettingsResult.value.ssao
+  const useCompA = composerA && (ssaoA === 'on' || ssaoA === 'only')
+  const useCompB = composerB && (ssaoB === 'on' || ssaoB === 'only')
   if (ssaoPassA) patchSsaoCameraUniforms(ssaoPassA, cameraA)
   if (ssaoPassB) patchSsaoCameraUniforms(ssaoPassB, cameraB)
   if (useCompA) composerA.render(delta)
@@ -1370,10 +1375,13 @@ defineExpose({
             <option value="soft">光照·柔和</option>
             <option value="flat">光照·平铺</option>
           </select>
-          <select v-model="viewStateSource.textureMode" class="vt-sel">
+          <select v-model="viewStateSource.textureMode" class="vt-sel vt-sel-wide" title="单槽：仅用该槽贴图赋 MeshBasic（含 envMap）">
             <option value="full">贴图·采样</option>
             <option value="albedoFlat">贴图·无光照</option>
             <option value="hideMaps">贴图·隐藏</option>
+            <option v-for="key in TEXTURE_PREVIEW_SLOT_KEYS" :key="'tex-src-' + key" :value="'slot:' + key">
+              槽·{{ key }}
+            </option>
           </select>
           <select v-model="viewStateSource.materialMode" class="vt-sel">
             <option value="original">材质·原始</option>
@@ -1405,17 +1413,23 @@ defineExpose({
           </select>
         </label>
         <label class="vp-gl">
-          <span>HDR</span>
-          <select v-model="renderSettingsSource.hdr" class="vt-sel">
-            <option value="off">关</option>
-            <option value="on">ACES</option>
+          <span>色调</span>
+          <select v-model="renderSettingsSource.toneMapping" class="vt-sel vt-sel-wide" title="色调映射 / HDR 曝光风格">
+            <option value="none">关</option>
+            <option value="linear">Linear</option>
+            <option value="aces">ACES Filmic</option>
+            <option value="reinhard">Reinhard</option>
+            <option value="cineon">Cineon</option>
+            <option value="agx">AgX</option>
+            <option value="neutral">Neutral</option>
           </select>
         </label>
         <label class="vp-gl">
           <span>SSAO</span>
-          <select v-model="renderSettingsSource.ssao" class="vt-sel">
+          <select v-model="renderSettingsSource.ssao" class="vt-sel vt-sel-wide">
             <option value="off">关</option>
-            <option value="on">屏幕空间 AO</option>
+            <option value="on">合成 AO</option>
+            <option value="only">仅显示 AO</option>
           </select>
         </label>
       </div>
@@ -1486,10 +1500,13 @@ defineExpose({
             <option value="soft">光照·柔和</option>
             <option value="flat">光照·平铺</option>
           </select>
-          <select v-model="viewStateResult.textureMode" class="vt-sel">
+          <select v-model="viewStateResult.textureMode" class="vt-sel vt-sel-wide" title="单槽：仅用该槽贴图赋 MeshBasic（含 envMap）">
             <option value="full">贴图·采样</option>
             <option value="albedoFlat">贴图·无光照</option>
             <option value="hideMaps">贴图·隐藏</option>
+            <option v-for="key in TEXTURE_PREVIEW_SLOT_KEYS" :key="'tex-dst-' + key" :value="'slot:' + key">
+              槽·{{ key }}
+            </option>
           </select>
           <select v-model="viewStateResult.materialMode" class="vt-sel">
             <option value="original">材质·原始</option>
@@ -1521,17 +1538,23 @@ defineExpose({
           </select>
         </label>
         <label class="vp-gl">
-          <span>HDR</span>
-          <select v-model="renderSettingsResult.hdr" class="vt-sel">
-            <option value="off">关</option>
-            <option value="on">ACES</option>
+          <span>色调</span>
+          <select v-model="renderSettingsResult.toneMapping" class="vt-sel vt-sel-wide" title="色调映射 / HDR 曝光风格">
+            <option value="none">关</option>
+            <option value="linear">Linear</option>
+            <option value="aces">ACES Filmic</option>
+            <option value="reinhard">Reinhard</option>
+            <option value="cineon">Cineon</option>
+            <option value="agx">AgX</option>
+            <option value="neutral">Neutral</option>
           </select>
         </label>
         <label class="vp-gl">
           <span>SSAO</span>
-          <select v-model="renderSettingsResult.ssao" class="vt-sel">
+          <select v-model="renderSettingsResult.ssao" class="vt-sel vt-sel-wide">
             <option value="off">关</option>
-            <option value="on">屏幕空间 AO</option>
+            <option value="on">合成 AO</option>
+            <option value="only">仅显示 AO</option>
           </select>
         </label>
       </div>

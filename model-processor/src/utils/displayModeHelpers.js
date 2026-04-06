@@ -7,8 +7,49 @@ import {
   UniformsUtils,
 } from 'three'
 import { filterAttributeKeysForVertexDebugShader, vertexAttrDisplayName } from './vertexAttrNaming.js'
+import { MATERIAL_MAP_KEYS } from './analyzeDuplicateResources.js'
 
 export { vertexAttrDisplayName }
+/** 贴图下拉「单独槽预览」选项（与材质槽名一致） */
+export { MATERIAL_MAP_KEYS as TEXTURE_PREVIEW_SLOT_KEYS }
+
+/** @type {import('three').MeshBasicMaterial | null} */
+let _meshPointsHideMaterial = null
+
+function getMeshPointsHideMaterial() {
+  if (!_meshPointsHideMaterial) {
+    _meshPointsHideMaterial = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+      colorWrite: false,
+    })
+    _meshPointsHideMaterial.userData.__workbenchMeshPointsHide = true
+  }
+  return _meshPointsHideMaterial
+}
+
+function isWorkbenchMeshPointsHideMaterial(m) {
+  return !!(m && m.userData?.__workbenchMeshPointsHide)
+}
+
+/**
+ * 仅用于显示某一贴图槽（`map` / `normalMap` …）；无贴图时占位深灰。
+ * @param {import('three').Material | null} mat
+ * @param {string} slotKey
+ */
+function buildSingleSlotPreviewMaterial(mat, slotKey) {
+  if (!mat) return mat
+  const tex = mat[slotKey]
+  if (!tex?.isTexture) {
+    return new THREE.MeshBasicMaterial({ color: 0x1e2229, side: THREE.DoubleSide, toneMapped: false })
+  }
+  if (slotKey === 'envMap') {
+    return new THREE.MeshBasicMaterial({ envMap: tex, side: THREE.DoubleSide, toneMapped: false })
+  }
+  return new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, toneMapped: false })
+}
 
 /**
  * @param {import('three').Object3D | null} root
@@ -302,7 +343,12 @@ function restoreMaterials(root) {
       if (typeof st.visible === 'boolean') o.visible = st.visible
       const disposeList = Array.isArray(o.material) ? o.material : [o.material]
       for (const m of disposeList) {
-        if (m && m !== st.material && typeof m.dispose === 'function') {
+        if (
+          m &&
+          m !== st.material &&
+          typeof m.dispose === 'function' &&
+          !isWorkbenchMeshPointsHideMaterial(m)
+        ) {
           try {
             m.dispose()
           } catch {
@@ -356,25 +402,30 @@ export function applyViewportViewState(root, state, ctx, scene) {
 
   applySceneLighting(scene, lightingMode)
 
-  // 点云：对 Mesh 使用其顶点缓冲绘制 Points（每顶点一个点，而非三角面片）
+  // 点云：对 Mesh 使用其顶点缓冲绘制 Points；父级不可见会连子级 Points 一起不渲染，故保留 Mesh 可见并换成「不写色深」的占位材质。
   if (geometryMode === 'points') {
+    const hideMat = getMeshPointsHideMaterial()
     root.traverse((o) => {
       if (!o.isMesh && !o.isSkinnedMesh) return
       const g = o.geometry
       if (!g?.attributes?.position) return
       saveOriginal(o)
-      o.visible = false
+      o.visible = true
+      const wasArray = Array.isArray(o.material)
+      const mats = wasArray ? o.material : [o.material]
+      o.material = wasArray ? mats.map(() => hideMat) : hideMat
       const pts = new THREE.Points(
         g,
         new THREE.PointsMaterial({
           color: 0x7ec8ff,
-          size: 0.025,
-          sizeAttenuation: true,
+          size: 4,
+          sizeAttenuation: false,
           depthTest: true,
           transparent: true,
-          opacity: 0.92,
+          opacity: 0.97,
         }),
       )
+      pts.frustumCulled = false
       pts.renderOrder = 1
       o.add(pts)
       o.userData._vertexPoints = pts
@@ -463,6 +514,18 @@ export function applyViewportViewState(root, state, ctx, scene) {
         })
         o.material = Array.isArray(o.material) ? next : next[0]
       })
+    } else if (textureMode.startsWith('slot:')) {
+      const slotKey = textureMode.slice(5)
+      if (MATERIAL_MAP_KEYS.includes(slotKey)) {
+        root.traverse((o) => {
+          if (!o.isMesh && !o.isSkinnedMesh) return
+          saveOriginal(o)
+          const wasArray = Array.isArray(o.material)
+          const mats = wasArray ? o.material : [o.material]
+          const next = mats.map((m) => buildSingleSlotPreviewMaterial(m, slotKey))
+          o.material = wasArray ? next : next[0]
+        })
+      }
     }
   }
 

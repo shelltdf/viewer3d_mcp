@@ -46,15 +46,62 @@ export function patchSsaoCameraUniforms(ssaoPass, camera) {
 }
 
 const _axisDir = new THREE.Vector3()
-const _axisClearSaved = new THREE.Color()
+
+/** 纯色 RGB 轴（无渐变），臂长约为 AxesHelper 默认一半 */
+function createSolidRgbAxes(arm) {
+  const positions = new Float32Array([
+    0,
+    0,
+    0,
+    arm,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    arm,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    arm,
+  ])
+  const colors = new Float32Array([
+    1,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    1,
+  ])
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  const m = new THREE.LineBasicMaterial({ vertexColors: true, toneMapped: false })
+  return new THREE.LineSegments(g, m)
+}
 
 /**
- * 右上角 XYZ→RGB 轴辅助（与 Three AxesHelper 一致：X 红、Y 绿、Z 蓝）。
+ * 右上角 XYZ→RGB 轴辅助（粗实线、顶点色纯色）。
  */
 export function createAxisGizmoContext() {
   const scene = new THREE.Scene()
-  const axes = new THREE.AxesHelper(1.35)
-  scene.add(axes)
+  scene.add(createSolidRgbAxes(0.5))
   const cam = new THREE.PerspectiveCamera(50, 1, 0.05, 120)
   return { scene, cam }
 }
@@ -80,26 +127,21 @@ export function renderCornerAxisGizmo(renderer, mainCamera, ctx) {
   const dpr = renderer.getPixelRatio()
   const fullW = canvas.width
   const fullH = canvas.height
-  const size = Math.max(44, Math.round(66 * dpr))
+  const size = Math.max(22, Math.round(33 * dpr))
   const pad = Math.round(8 * dpr)
   const x = Math.max(0, fullW - size - pad)
   const y = pad
 
   const prevAuto = renderer.autoClear
-  const prevAlpha = renderer.getClearAlpha()
-  renderer.getClearColor(_axisClearSaved)
-
-  renderer.autoClear = true
-  renderer.setClearColor(0x1a1d24, 0.9)
+  renderer.autoClear = false
   renderer.setScissorTest(true)
   renderer.setViewport(x, y, size, size)
   renderer.setScissor(x, y, size, size)
-  renderer.clear()
+  renderer.clear(false, true, false)
   renderer.render(ctx.scene, ctx.cam)
 
   renderer.setScissorTest(false)
   renderer.setViewport(0, 0, fullW, fullH)
   renderer.setScissor(0, 0, fullW, fullH)
-  renderer.setClearColor(_axisClearSaved, prevAlpha)
   renderer.autoClear = prevAuto
 }

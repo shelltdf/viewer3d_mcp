@@ -1,26 +1,32 @@
 import * as THREE from 'three'
 
 /**
+ * 色调映射 / 「HDR」风格：与后期 `OutputPass` 读取的 `renderer.toneMapping` 一致。
  * @param {import('three').WebGLRenderer | null} renderer
  * @param {'classic' | 'pbr' | 'raytrace'} pipeline
- * @param {boolean} hdrOn
+ * @param {string} toneMappingId `none` | `linear` | `aces` | `reinhard` | `cineon` | `agx` | `neutral`（兼容旧 `off`→none）
  */
-export function applyRendererToneAndPipeline(renderer, pipeline, hdrOn) {
+export function applyRendererToneAndPipeline(renderer, pipeline, toneMappingId) {
   if (!renderer) return
   const usePbr = pipeline === 'pbr' || pipeline === 'raytrace'
   renderer.physicallyCorrectLights = usePbr
   renderer.outputColorSpace = THREE.SRGBColorSpace
 
-  if (hdrOn) {
-    renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = pipeline === 'raytrace' ? 1.05 : 1
-  } else if (pipeline === 'classic') {
-    renderer.toneMapping = THREE.NoToneMapping
-    renderer.toneMappingExposure = 1
-  } else {
-    renderer.toneMapping = THREE.LinearToneMapping
-    renderer.toneMappingExposure = 1
+  const exp = pipeline === 'raytrace' ? 1.05 : 1
+  renderer.toneMappingExposure = exp
+
+  const id = toneMappingId === 'off' ? 'none' : toneMappingId || 'aces'
+
+  const map = {
+    none: THREE.NoToneMapping,
+    linear: THREE.LinearToneMapping,
+    aces: THREE.ACESFilmicToneMapping,
+    reinhard: THREE.ReinhardToneMapping,
+    cineon: THREE.CineonToneMapping,
+    agx: THREE.AgXToneMapping,
+    neutral: THREE.NeutralToneMapping,
   }
+  renderer.toneMapping = map[id] ?? THREE.ACESFilmicToneMapping
 }
 
 function applyShadowToSceneLightAndMeshes(scene, root, on) {
