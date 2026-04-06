@@ -9,6 +9,8 @@ import DuplicateResourceModal from './DuplicateResourceModal.vue'
 import UvEditorWindow from './UvEditorWindow.vue'
 import { useLocalWorkspace } from '../composables/useLocalWorkspace.js'
 import { useActivityLog } from '../composables/useActivityLog.js'
+import { useUiLocale } from '../composables/useUiLocale.js'
+import { useUiTheme } from '../composables/useUiTheme.js'
 
 const dualRef = ref(null)
 const fileInputRef = ref(null)
@@ -36,6 +38,7 @@ const selectedResultUuid = ref(null)
 
 /** 独立小弹窗：proc-* / bake-* / tool-* */
 const activeDialog = ref('')
+const showUrlModal = ref(false)
 const showWorkspaceModal = ref(false)
 const showLogModal = ref(false)
 const showMemoryModal = ref(false)
@@ -73,22 +76,28 @@ const lightboxTexture = ref(null)
 const lightboxMaterial = ref(null)
 const lightboxChannel = ref('rgba')
 
-const DIALOG_TITLES = {
-  'proc-mesh': '网格简化',
-  'proc-skeleton': '骨骼 / 权重简化',
-  'proc-atlas': '材质贴图合并',
-  'proc-pbr': '单贴图 → PBR',
-  'bake-light': '灯光烘焙',
-  'bake-tex': '烘焙到贴图',
-  'bake-vertex': '烘焙到顶点属性',
-  'tool-tiles': '切割瓦片',
-  'tool-mesh2pc': 'Mesh → 点云',
-  'tool-pc': '点云处理',
-  'tool-pc2mesh': '点云 → Mesh',
-  'tool-gaussian': 'Mesh → 高斯泼溅',
+const { locale, t, setLocale } = useUiLocale()
+const { themeMode, resolvedTheme, setThemeMode } = useUiTheme()
+
+const DIALOG_TITLE_KEYS = {
+  'proc-mesh': 'dlgMesh',
+  'proc-skeleton': 'dlgSkeleton',
+  'proc-atlas': 'dlgAtlas',
+  'proc-pbr': 'dlgPbr',
+  'bake-light': 'dlgBakeLight',
+  'bake-tex': 'dlgBakeTex',
+  'bake-vertex': 'dlgBakeVertex',
+  'tool-tiles': 'dlgTiles',
+  'tool-mesh2pc': 'dlgMesh2pc',
+  'tool-pc': 'dlgPc',
+  'tool-pc2mesh': 'dlgPc2mesh',
+  'tool-gaussian': 'dlgGaussian',
 }
 
-const dialogTitle = computed(() => DIALOG_TITLES[activeDialog.value] || '')
+const dialogTitle = computed(() => {
+  const key = DIALOG_TITLE_KEYS[activeDialog.value]
+  return key ? t(key) : ''
+})
 
 const { lines: logLines, push: logPush, formatAll: formatLogAll } = useActivityLog()
 
@@ -105,13 +114,13 @@ const {
 } = useLocalWorkspace()
 
 const workspaceTitle = computed(() =>
-  dirHandle.value ? workspaceLabel.value || '（已选文件夹）' : '无工作目录',
+  dirHandle.value ? workspaceLabel.value || t('workspaceSelectedFallback') : t('workspaceNone'),
 )
 
 watch(
-  workspaceTitle,
-  (t) => {
-    document.title = `模型处理工作台 — ${t}`
+  [workspaceTitle, locale],
+  () => {
+    document.title = `${t('titleApp')} ${t('titleSep')} ${workspaceTitle.value}`
   },
   { immediate: true },
 )
@@ -132,6 +141,19 @@ const inspectorPayload = computed(() => {
 
 const meshTargetRatio = ref(0.5)
 const meshPreserveBorder = ref(true)
+/** @type {import('vue').Ref<'qem' | 'cluster' | 'incremental' | 'attribute_aware'>} */
+const meshSimplifyAlgorithm = ref('qem')
+
+const MESH_ALGO_KEYS = {
+  qem: 'meshAlgoQem',
+  cluster: 'meshAlgoCluster',
+  incremental: 'meshAlgoIncremental',
+  attribute_aware: 'meshAlgoAttribute',
+}
+
+const meshAlgorithmOptions = computed(() =>
+  Object.entries(MESH_ALGO_KEYS).map(([value, key]) => ({ value, label: t(key) })),
+)
 const maxBones = ref(64)
 const maxInfluences = ref(4)
 const mergeTextures = ref(true)
@@ -153,11 +175,13 @@ const gaussianMode = ref('colmap-style')
 
 const dockCollapsed = ref(false)
 
+const logLocaleTag = computed(() => (locale.value === 'zh' ? 'zh-CN' : 'en-US'))
+
 const logTextDisplay = computed(() =>
   logLines.value
     .map((l) => {
       const d = new Date(l.t)
-      const ts = d.toLocaleTimeString('zh-CN', { hour12: false })
+      const ts = d.toLocaleTimeString(logLocaleTag.value, { hour12: false })
       return `[${ts}] [${l.kind}] ${l.text}`
     })
     .join('\n'),
@@ -170,7 +194,7 @@ function setStatus(text, kind = 'idle') {
 }
 
 onMounted(() => {
-  logPush('就绪', 'idle')
+  logPush(t('statusReady'), 'idle')
 })
 
 function openLogModal() {
@@ -341,12 +365,13 @@ function openFiles() {
 async function loadFromUrl() {
   const u = urlInput.value.trim()
   if (!u) {
-    setStatus('请输入模型 URL', 'error')
+    setStatus(t('urlEmptyError'), 'error')
     return
   }
-  setStatus('正在加载 URL…', 'loading')
+  setStatus(t('urlLoading'), 'loading')
   try {
     await dualRef.value?.loadUrl(u)
+    showUrlModal.value = false
   } catch {
     /* error emitted */
   }
@@ -385,102 +410,161 @@ function clearWorkspace() {
 function openWorkspaceMenu() {
   showWorkspaceModal.value = true
 }
+
+function openUrlModal() {
+  showUrlModal.value = true
+}
+
+function meshAlgoShortLabel() {
+  const key = MESH_ALGO_KEYS[meshSimplifyAlgorithm.value]
+  return key ? t(key) : meshSimplifyAlgorithm.value
+}
+
+function runMeshSimplify() {
+  setStatus(
+    `「${t('dlgMesh')}」${meshAlgoShortLabel()} · ${t('meshTargetRatio')}=${meshTargetRatio.value.toFixed(2)} — ${t('dlgPlaceholderLead')}`,
+    'ok',
+  )
+  activeDialog.value = ''
+}
 </script>
 
 <template>
-  <div class="workbench">
+  <div class="workbench" :data-shell-theme="resolvedTheme">
     <nav class="menubar">
       <div class="menu-root">
-        <button class="menu-btn" type="button">文件</button>
+        <button class="menu-btn" type="button">{{ t('menuFile') }}</button>
         <div class="menu-pop">
-          <button class="menu-item" type="button" @click="openFiles">打开模型…</button>
-          <button class="menu-item" type="button" @click="loadFromUrl">从 URL 加载</button>
+          <button class="menu-item" type="button" @click="openFiles">{{ t('fileOpenModel') }}</button>
+          <button class="menu-item" type="button" @click="openUrlModal">{{ t('fileOpenFromUrl') }}</button>
           <div class="menu-sep" />
-          <button class="menu-item" type="button" @click="runPlaceholder('导出 glTF')">导出 glTF…</button>
+          <button class="menu-item" type="button" @click="runPlaceholder('导出 glTF')">{{ t('fileExportGltf') }}</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">处理</button>
+        <button class="menu-btn menu-top" type="button">{{ t('menuProcess') }}</button>
         <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'">网格简化…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'">骨骼 / 权重简化…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'">材质贴图合并…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'proc-pbr'">单贴图 → PBR…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'">{{ t('dlgMesh') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'">{{ t('dlgSkeleton') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'">{{ t('dlgAtlas') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-pbr'">{{ t('dlgPbr') }}…</button>
           <div class="menu-sep" />
-          <button class="menu-item" type="button" @click="showDuplicateModal = true">重复资源共享…</button>
+          <button class="menu-item" type="button" @click="showDuplicateModal = true">{{ t('menuDuplicateResources') }}</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">烘焙</button>
+        <button class="menu-btn menu-top" type="button">{{ t('menuBake') }}</button>
         <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'bake-light'">灯光烘焙…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'bake-tex'">烘焙到贴图…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'bake-vertex'">烘焙到顶点…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-light'">{{ t('dlgBakeLight') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-tex'">{{ t('dlgBakeTex') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-vertex'">{{ t('dlgBakeVertex') }}…</button>
         </div>
       </div>
       <div class="menu-root">
-        <button class="menu-btn menu-top" type="button">工具</button>
+        <button class="menu-btn menu-top" type="button">{{ t('menuTools') }}</button>
         <div class="menu-pop menu-pop-wide">
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-tiles'">切割瓦片…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-mesh2pc'">Mesh → 点云…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc'">点云处理…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc2mesh'">点云 → Mesh…</button>
-          <button class="menu-item" type="button" @click="activeDialog = 'tool-gaussian'">Mesh → 高斯泼溅…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-tiles'">{{ t('dlgTiles') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-mesh2pc'">{{ t('dlgMesh2pc') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc'">{{ t('dlgPc') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc2mesh'">{{ t('dlgPc2mesh') }}…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-gaussian'">{{ t('dlgGaussian') }}…</button>
         </div>
       </div>
-      <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu">本地工作目录</button>
-      <button class="menu-btn menu-top" type="button" @click="showMemoryModal = true">内存预览</button>
       <div class="menu-root">
-        <button class="menu-btn" type="button">帮助</button>
+        <button class="menu-btn menu-top" type="button">{{ t('menuLanguage') }}</button>
         <div class="menu-pop">
-          <span class="menu-hint">Vue + three.js 模型工作台壳层；算法管线可后续接入。</span>
+          <button
+            class="menu-item menu-check"
+            :class="{ checked: locale === 'zh' }"
+            type="button"
+            @click="setLocale('zh')"
+          >
+            {{ t('langZh') }}
+          </button>
+          <button
+            class="menu-item menu-check"
+            :class="{ checked: locale === 'en' }"
+            type="button"
+            @click="setLocale('en')"
+          >
+            {{ t('langEn') }}
+          </button>
+        </div>
+      </div>
+      <div class="menu-root">
+        <button class="menu-btn menu-top" type="button">{{ t('menuTheme') }}</button>
+        <div class="menu-pop">
+          <button
+            class="menu-item menu-check"
+            :class="{ checked: themeMode === 'system' }"
+            type="button"
+            @click="setThemeMode('system')"
+          >
+            {{ t('themeSystem') }}
+          </button>
+          <button
+            class="menu-item menu-check"
+            :class="{ checked: themeMode === 'light' }"
+            type="button"
+            @click="setThemeMode('light')"
+          >
+            {{ t('themeLight') }}
+          </button>
+          <button
+            class="menu-item menu-check"
+            :class="{ checked: themeMode === 'dark' }"
+            type="button"
+            @click="setThemeMode('dark')"
+          >
+            {{ t('themeDark') }}
+          </button>
+        </div>
+      </div>
+      <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu">{{ t('workspaceBtn') }}</button>
+      <button class="menu-btn menu-top" type="button" @click="showMemoryModal = true">{{ t('memoryBtn') }}</button>
+      <div class="menu-root">
+        <button class="menu-btn" type="button">{{ t('menuHelp') }}</button>
+        <div class="menu-pop">
+          <span class="menu-hint">{{ t('helpHint') }}</span>
         </div>
       </div>
     </nav>
 
     <div class="title-bar">
-      <span class="title-app">模型处理工作台</span>
-      <span class="title-sep">·</span>
+      <span class="title-app">{{ t('titleApp') }}</span>
+      <span class="title-sep">{{ t('titleSep') }}</span>
       <span class="title-workspace" :title="workspaceTitle">{{ workspaceTitle }}</span>
     </div>
 
     <div class="toolbar">
-      <button type="button" class="tool-btn primary" @click="openFiles">打开</button>
-      <button type="button" class="tool-btn" @click="dualRef?.resetCameras?.()">重置相机</button>
+      <button type="button" class="tool-btn primary" @click="openFiles">{{ t('toolbarOpen') }}</button>
+      <button type="button" class="tool-btn" @click="dualRef?.resetCameras?.()">{{ t('toolbarResetCam') }}</button>
       <button
         type="button"
         class="tool-btn"
         :class="{ 'tool-btn-active': viewportMaximized }"
-        :title="viewportMaximized ? '恢复左右栏布局' : '仅最大化中央 3D（单侧铺满 / 双视口左右等分）'"
+        :title="viewportMaximized ? t('toolbarViewportMaxTitleOn') : t('toolbarViewportMaxTitleOff')"
         @click="viewportMaximized = !viewportMaximized"
       >
-        3D 最大化
+        {{ t('toolbarViewportMax') }}
       </button>
-      <label class="toolbar-cb toolbar-cb-wide" title="两侧视口相机目标与朝向同步">
+      <label class="toolbar-cb toolbar-cb-wide" :title="t('toolbarLinkCamTitle')">
         <input v-model="linkCamerasLinked" type="checkbox" />
-        联动观察
+        {{ t('toolbarLinkCam') }}
       </label>
-      <label
-        class="toolbar-cb toolbar-cb-wide"
-        title="在处理前/处理后场景中各放置一块与模型尺度匹配的圆形浅灰地面（MeshStandard ~80% 灰），仅接收阴影，便于观察平行光阴影"
-      >
+      <label class="toolbar-cb toolbar-cb-wide" :title="t('toolbarGroundTitle')">
         <input v-model="helperGroundEnabled" type="checkbox" />
-        辅助地面
+        {{ t('toolbarGround') }}
       </label>
-      <div class="toolbar-vp" title="控制中央双视口是否显示；大纲仍可分别浏览两侧">
+      <div class="toolbar-vp" :title="t('toolbarVpGroupTitle')">
         <label class="toolbar-cb"
-          ><input v-model="showViewportSource" type="checkbox" /> 显示处理前</label
+          ><input v-model="showViewportSource" type="checkbox" /> {{ t('toolbarShowSource') }}</label
         >
         <label class="toolbar-cb"
-          ><input v-model="showViewportResult" type="checkbox" /> 显示处理后</label
+          ><input v-model="showViewportResult" type="checkbox" /> {{ t('toolbarShowResult') }}</label
         >
       </div>
       <span class="toolbar-gap" />
-      <label class="inline">
-        <span class="lbl">URL</span>
-        <input v-model="urlInput" class="url-field" type="text" placeholder=".gltf / .glb / .obj" @keydown.enter="loadFromUrl" />
-      </label>
-      <button type="button" class="tool-btn" @click="loadFromUrl">加载</button>
       <input
         ref="fileInputRef"
         class="hidden"
@@ -494,7 +578,7 @@ function openWorkspaceMenu() {
     <div class="main-row" :class="{ 'viewport-max-mode': viewportMaximized }">
       <aside class="left-dock">
         <SceneOutliner
-          title="大纲 · 处理前"
+          :title="t('outlinerSource')"
           :items="sourceOutline"
           :expanded-uuids="expandedSource"
           :selected-uuid="selectedSourceUuid"
@@ -502,7 +586,7 @@ function openWorkspaceMenu() {
           @select="onSelectSource"
         />
         <SceneOutliner
-          title="大纲 · 处理后"
+          :title="t('outlinerResult')"
           :items="resultOutline"
           :expanded-uuids="expandedResult"
           :selected-uuid="selectedResultUuid"
@@ -529,8 +613,13 @@ function openWorkspaceMenu() {
 
       <aside class="right-dock" :class="{ collapsed: dockCollapsed }">
         <div class="dock-head">
-          <span>属性</span>
-          <button type="button" class="dock-toggle" :title="dockCollapsed ? '展开' : '折叠'" @click="dockCollapsed = !dockCollapsed">
+          <span>{{ t('dockProps') }}</span>
+          <button
+            type="button"
+            class="dock-toggle"
+            :title="dockCollapsed ? t('dockExpand') : t('dockCollapse')"
+            @click="dockCollapsed = !dockCollapsed"
+          >
             {{ dockCollapsed ? '⟨' : '⟩' }}
           </button>
         </div>
@@ -554,165 +643,199 @@ function openWorkspaceMenu() {
         </header>
         <div class="modal-body">
           <template v-if="activeDialog === 'proc-mesh'">
-            <p class="modal-hint">网格简化参数（占位，可接入 WASM / 后端）。</p>
+            <p class="modal-hint">{{ t('meshHint') }}</p>
             <label class="field">
-              <span>目标三角面比例</span>
+              <span>{{ t('meshAlgoLabel') }}</span>
+              <select v-model="meshSimplifyAlgorithm" class="sel mesh-algo-sel">
+                <option v-for="opt in meshAlgorithmOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              </select>
+            </label>
+            <p class="modal-hint sub-hint">{{ t('dlgPlaceholderLead') }}</p>
+            <label class="field">
+              <span>{{ t('meshTargetRatio') }}</span>
               <input v-model.number="meshTargetRatio" type="range" min="0.05" max="1" step="0.05" />
               <span class="mono">{{ meshTargetRatio.toFixed(2) }}</span>
             </label>
-            <label class="check"><input v-model="meshPreserveBorder" type="checkbox" /> 保护边界</label>
+            <label class="check"><input v-model="meshPreserveBorder" type="checkbox" /> {{ t('meshPreserveBorder') }}</label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('网格简化'); activeDialog = ''">运行网格简化</button>
+              <button type="button" class="tool-btn" @click="runMeshSimplify">{{ t('meshRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'proc-skeleton'">
-            <p class="modal-hint">骨骼与权重简化（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>最大骨骼数</span>
+              <span>{{ t('maxBonesLabel') }}</span>
               <input v-model.number="maxBones" class="num" type="number" min="1" max="512" />
             </label>
             <label class="field">
-              <span>每顶点最大影响数</span>
+              <span>{{ t('maxInfluencesLabel') }}</span>
               <input v-model.number="maxInfluences" class="num" type="number" min="1" max="8" />
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('骨骼简化'); activeDialog = ''">运行骨骼 / 权重简化</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('骨骼简化'); activeDialog = ''">{{ t('skeletonRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'proc-atlas'">
-            <p class="modal-hint">合并材质贴图为 Atlas（占位）。</p>
-            <label class="check"><input v-model="mergeTextures" type="checkbox" /> 合并材质贴图（Atlas）</label>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
+            <label class="check"><input v-model="mergeTextures" type="checkbox" /> {{ t('mergeTexturesLabel') }}</label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('贴图合并'); activeDialog = ''">运行合并</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('贴图合并'); activeDialog = ''">{{ t('atlasRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'proc-pbr'">
-            <p class="modal-hint">由单张贴图推测 PBR 通道（占位）。</p>
-            <label class="check"><input v-model="pbrFromSingle" type="checkbox" /> 单张贴图推测 PBR</label>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
+            <label class="check"><input v-model="pbrFromSingle" type="checkbox" /> {{ t('pbrSingleLabel') }}</label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('PBR 生成'); activeDialog = ''">运行 PBR 生成</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('PBR 生成'); activeDialog = ''">{{ t('pbrRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'bake-light'">
-            <p class="modal-hint">灯光烘焙（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>贴图分辨率</span>
+              <span>{{ t('bakeResLabel') }}</span>
               <input v-model.number="bakeResolution" class="num" type="number" step="256" min="256" max="8192" />
             </label>
             <label class="field">
-              <span>灯光采样</span>
+              <span>{{ t('lightSamplesLabel') }}</span>
               <input v-model.number="lightBakeSamples" class="num" type="number" min="1" max="4096" />
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('灯光烘焙'); activeDialog = ''">开始灯光烘焙</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('灯光烘焙'); activeDialog = ''">{{ t('bakeLightRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'bake-tex'">
-            <p class="modal-hint">烘焙到贴图（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>贴图分辨率</span>
+              <span>{{ t('bakeResLabel') }}</span>
               <input v-model.number="bakeResolution" class="num" type="number" step="256" min="256" max="8192" />
             </label>
             <label class="field">
-              <span>灯光采样</span>
+              <span>{{ t('lightSamplesLabel') }}</span>
               <input v-model.number="lightBakeSamples" class="num" type="number" min="1" max="4096" />
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到贴图'); activeDialog = ''">烘焙到贴图</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到贴图'); activeDialog = ''">{{ t('bakeTexRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'bake-vertex'">
-            <p class="modal-hint">烘焙到顶点属性（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>顶点通道</span>
-              <input v-model="vertexBakeChannels" class="txt" type="text" placeholder="color, ao, …" />
+              <span>{{ t('vertexChannelsLabel') }}</span>
+              <input v-model="vertexBakeChannels" class="txt" type="text" :placeholder="t('vertexChannelsPh')" />
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到顶点'); activeDialog = ''">烘焙到顶点</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到顶点'); activeDialog = ''">{{ t('bakeVertexRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'tool-tiles'">
-            <p class="modal-hint">切割瓦片（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>瓦片尺寸</span>
+              <span>{{ t('tileSizeLabel') }}</span>
               <input v-model.number="tileSize" class="num" type="number" min="0.1" step="0.1" />
             </label>
             <label class="field">
-              <span>瓦片重叠</span>
+              <span>{{ t('tileOverlapLabel') }}</span>
               <input v-model.number="tileOverlap" class="num" type="number" min="0" step="0.01" />
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('切割瓦片'); activeDialog = ''">运行切割</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('切割瓦片'); activeDialog = ''">{{ t('tilesRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'tool-mesh2pc'">
-            <p class="modal-hint">Mesh → 点云（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>点云密度</span>
+              <span>{{ t('pcDensityLabel') }}</span>
               <select v-model="pcDensity" class="sel">
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
+                <option value="low">{{ t('pcLow') }}</option>
+                <option value="medium">{{ t('pcMedium') }}</option>
+                <option value="high">{{ t('pcHigh') }}</option>
               </select>
             </label>
-            <label class="check"><input v-model="pcNoiseRemove" type="checkbox" /> 点云去噪</label>
+            <label class="check"><input v-model="pcNoiseRemove" type="checkbox" /> {{ t('pcDenoiseLabel') }}</label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('Mesh → 点云'); activeDialog = ''">转换</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('Mesh → 点云'); activeDialog = ''">{{ t('mesh2pcRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'tool-pc'">
-            <p class="modal-hint">点云处理（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>点云密度</span>
+              <span>{{ t('pcDensityLabel') }}</span>
               <select v-model="pcDensity" class="sel">
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
+                <option value="low">{{ t('pcLow') }}</option>
+                <option value="medium">{{ t('pcMedium') }}</option>
+                <option value="high">{{ t('pcHigh') }}</option>
               </select>
             </label>
-            <label class="check"><input v-model="pcNoiseRemove" type="checkbox" /> 点云去噪</label>
+            <label class="check"><input v-model="pcNoiseRemove" type="checkbox" /> {{ t('pcDenoiseLabel') }}</label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('点云处理'); activeDialog = ''">处理</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('点云处理'); activeDialog = ''">{{ t('pcProcRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'tool-pc2mesh'">
-            <p class="modal-hint">点云 → Mesh（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>重建方法</span>
+              <span>{{ t('meshFromPcLabel') }}</span>
               <select v-model="meshFromPcMethod" class="sel">
-                <option value="poisson">Poisson</option>
-                <option value="ball_pivot">Ball pivot</option>
-                <option value="alpha_shape">Alpha shape</option>
+                <option value="poisson">{{ t('poisson') }}</option>
+                <option value="ball_pivot">{{ t('ballPivot') }}</option>
+                <option value="alpha_shape">{{ t('alphaShape') }}</option>
               </select>
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('点云 → Mesh'); activeDialog = ''">重建</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('点云 → Mesh'); activeDialog = ''">{{ t('pc2meshRun') }}</button>
             </div>
           </template>
 
           <template v-else-if="activeDialog === 'tool-gaussian'">
-            <p class="modal-hint">Mesh → 高斯泼溅（占位）。</p>
+            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
             <label class="field">
-              <span>模式</span>
+              <span>{{ t('gaussianModeLabel') }}</span>
               <select v-model="gaussianMode" class="sel">
-                <option value="colmap-style">COLMAP 风格（占位）</option>
-                <option value="instant-ngp">Instant-NGP 风格（占位）</option>
+                <option value="colmap-style">{{ t('colmapStyle') }}</option>
+                <option value="instant-ngp">{{ t('instantNgp') }}</option>
               </select>
             </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('高斯泼溅'); activeDialog = ''">转换</button>
+              <button type="button" class="tool-btn" @click="runPlaceholder('高斯泼溅'); activeDialog = ''">{{ t('gaussianRun') }}</button>
             </div>
           </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- 从 URL 打开 -->
+    <div v-if="showUrlModal" class="modal-backdrop" @click.self="showUrlModal = false">
+      <div class="modal-panel modal-url" role="dialog" aria-labelledby="dlg-url-title">
+        <header class="modal-head">
+          <h2 id="dlg-url-title">{{ t('urlModalTitle') }}</h2>
+          <button type="button" class="modal-close" @click="showUrlModal = false">×</button>
+        </header>
+        <div class="modal-body">
+          <p class="modal-hint">{{ t('urlModalHint') }}</p>
+          <label class="field field-block">
+            <span class="sr-only">URL</span>
+            <input
+              v-model="urlInput"
+              class="txt url-modal-input"
+              type="text"
+              :placeholder="t('urlPlaceholder')"
+              @keydown.enter="loadFromUrl"
+            />
+          </label>
+          <div class="btn-row">
+            <button type="button" class="tool-btn primary" @click="loadFromUrl">{{ t('urlLoad') }}</button>
+            <button type="button" class="tool-btn" @click="showUrlModal = false">{{ t('urlCancel') }}</button>
+          </div>
         </div>
       </div>
     </div>
@@ -721,29 +844,29 @@ function openWorkspaceMenu() {
     <div v-if="showWorkspaceModal" class="modal-backdrop" @click.self="showWorkspaceModal = false">
       <div class="modal-panel modal-wide" role="dialog" aria-labelledby="dlg-ws-title">
         <header class="modal-head">
-          <h2 id="dlg-ws-title">本地工作目录</h2>
+          <h2 id="dlg-ws-title">{{ t('dlgWsTitle') }}</h2>
           <button type="button" class="modal-close" @click="showWorkspaceModal = false">×</button>
         </header>
         <div class="modal-body">
-          <p class="hint">Chrome / Edge 可选文件夹授权；纯浏览器无法访问任意磁盘路径。</p>
+          <p class="hint">{{ t('wsHint') }}</p>
           <label class="field">
-            <span>标签 / 备注</span>
+            <span>{{ t('wsLabel') }}</span>
             <input
               :value="workspaceLabel"
               class="txt"
               type="text"
-              placeholder="手动填写工作区说明"
+              :placeholder="t('wsLabelPh')"
               @input="setManualLabel($event.target.value)"
             />
           </label>
           <label class="field">
-            <span>递归深度</span>
+            <span>{{ t('wsDepth') }}</span>
             <input v-model.number="listMaxDepth" class="num" type="number" min="1" max="8" @change="refreshListing" />
           </label>
           <div class="btn-row">
-            <button type="button" class="tool-btn" @click="pickWorkspace">选择文件夹…</button>
-            <button type="button" class="tool-btn" @click="refreshListing">刷新列表</button>
-            <button type="button" class="tool-btn" @click="clearWorkspace">清除</button>
+            <button type="button" class="tool-btn" @click="pickWorkspace">{{ t('wsPick') }}</button>
+            <button type="button" class="tool-btn" @click="refreshListing">{{ t('wsRefresh') }}</button>
+            <button type="button" class="tool-btn" @click="clearWorkspace">{{ t('wsClear') }}</button>
           </div>
           <div v-if="workspaceError" class="err">{{ workspaceError }}</div>
           <ul class="file-mini">
@@ -802,19 +925,17 @@ function openWorkspaceMenu() {
     >
       <div class="modal-panel merge-result-panel" role="alertdialog" aria-labelledby="merge-result-title" aria-modal="true">
         <header class="modal-head merge-result-head">
-          <h2 id="merge-result-title">合并结果</h2>
+          <h2 id="merge-result-title">{{ t('dlgMergeTitle') }}</h2>
           <button type="button" class="modal-close" aria-label="关闭" @click="closeMergeResultDialog">×</button>
         </header>
         <div class="modal-body merge-result-body">
-          <p class="merge-result-lead">
-            已写入<strong>处理后</strong>场景；<strong>处理前</strong>仍为只读对照，未修改。重复资源窗口保持打开，列表已刷新。
-          </p>
+          <p class="merge-result-lead" v-html="t('mergeLeadHtml')" />
           <ul class="merge-result-list">
             <li v-for="(line, idx) in mergeResultLines" :key="idx">{{ line }}</li>
           </ul>
         </div>
         <div class="merge-result-actions">
-          <button type="button" class="tool-btn accent" @click="closeMergeResultDialog">确定</button>
+          <button type="button" class="tool-btn accent" @click="closeMergeResultDialog">{{ t('dlgMergeOk') }}</button>
         </div>
       </div>
     </div>
@@ -822,14 +943,14 @@ function openWorkspaceMenu() {
     <div v-if="showLogModal" class="modal-backdrop" @click.self="showLogModal = false">
       <div class="modal-panel log-modal" role="dialog">
         <header class="modal-head">
-          <h2>日志</h2>
+          <h2>{{ t('dlgLogTitle') }}</h2>
           <button type="button" class="modal-close" @click="showLogModal = false">×</button>
         </header>
         <div class="modal-body log-body">
           <pre class="log-pre">{{ logTextDisplay }}</pre>
         </div>
         <div class="log-actions">
-          <button type="button" class="tool-btn" @click="copyLogText">复制文本</button>
+          <button type="button" class="tool-btn" @click="copyLogText">{{ t('logCopy') }}</button>
         </div>
       </div>
     </div>
@@ -837,20 +958,18 @@ function openWorkspaceMenu() {
     <footer
       class="statusbar"
       :class="`st-${statusKind}`"
-      title="双击打开日志查看完整记录；单行超长已省略"
+      :title="t('statusBarTitle')"
       @dblclick="openLogModal"
     >
       <span class="status-msg" :title="statusText">{{ statusText }}</span>
-      <div
-        class="status-right"
-        title="各视口格内左上角为左右独立「存储估」；此处为进程级 JS/GPU 粗估。双击状态栏打开日志。"
-      >
+      <div class="status-right" :title="t('statusMemTitle')">
         <span class="status-js-line">
           <template v-if="memStats.js">
-            JS {{ fmtMemBar(memStats.js.used) }} / {{ fmtMemBar(memStats.js.limit) }}
+            {{ t('statusJs') }} {{ fmtMemBar(memStats.js.used) }} / {{ fmtMemBar(memStats.js.limit) }}
           </template>
-          <template v-else>JS —</template>
-          · 合计 GPU 估 {{ fmtMemBar(memStats.gpuEst) }} · 峰值 {{ fmtMemBar(memStats.gpuPeakEst) }} · WebGL 纹理对象
+          <template v-else>{{ t('statusJs') }} —</template>
+          · {{ t('statusGpuTotal') }} {{ fmtMemBar(memStats.gpuEst) }} · {{ t('statusGpuPeak') }}
+          {{ fmtMemBar(memStats.gpuPeakEst) }} · {{ t('statusTexObjects') }}
           {{ memStats.textures }}
         </span>
       </div>
@@ -866,6 +985,130 @@ function openWorkspaceMenu() {
   min-height: 100vh;
   background: #0f1115;
   color: #e8eaed;
+}
+.workbench[data-shell-theme='light'] {
+  background: #e4e6eb;
+  color: #1a1f28;
+}
+.workbench[data-shell-theme='light'] .menubar {
+  background: linear-gradient(#f0f2f5, #e2e5ea);
+  border-bottom: 1px solid #c5cad4;
+}
+.workbench[data-shell-theme='light'] .menu-btn {
+  border-color: #b8c0cc;
+  color: #2d3748;
+  background: rgba(255, 255, 255, 0.35);
+}
+.workbench[data-shell-theme='light'] .menu-btn:hover {
+  border-color: #8b96a8;
+  background: #fff;
+}
+.workbench[data-shell-theme='light'] .menu-pop {
+  background: linear-gradient(#fafbfc, #eef0f4);
+  border-color: #aeb6c4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.workbench[data-shell-theme='light'] .menu-item {
+  color: #1e293b;
+}
+.workbench[data-shell-theme='light'] .menu-item:hover {
+  background: #dde3ec;
+  border-color: #9aa8bc;
+}
+.workbench[data-shell-theme='light'] .menu-sep {
+  background: #c5cad4;
+}
+.workbench[data-shell-theme='light'] .menu-hint {
+  color: #475569;
+}
+.workbench[data-shell-theme='light'] .title-bar {
+  background: linear-gradient(#f4f6f9, #e8ebf0);
+  border-bottom: 1px solid #cfd6e0;
+  color: #475569;
+}
+.workbench[data-shell-theme='light'] .title-app {
+  color: #0f172a;
+}
+.workbench[data-shell-theme='light'] .title-workspace {
+  color: #166534;
+}
+.workbench[data-shell-theme='light'] .toolbar {
+  background: linear-gradient(#eceef2, #e0e3e9);
+  border-bottom: 1px solid #c5cad4;
+}
+.workbench[data-shell-theme='light'] .tool-btn {
+  border-color: #9aa8bc;
+  background: linear-gradient(#f8f9fb, #e8ecf2);
+  color: #1e293b;
+}
+.workbench[data-shell-theme='light'] .tool-btn:hover {
+  border-color: #5b7a9e;
+}
+.workbench[data-shell-theme='light'] .tool-btn.primary {
+  background: linear-gradient(#5b8fc7, #4a7ab0);
+  color: #fff;
+}
+.workbench[data-shell-theme='light'] .left-dock {
+  background: #f0f2f6;
+  border-right-color: #c5cad4;
+}
+.workbench[data-shell-theme='light'] .right-dock {
+  background: #ebeff5;
+  border-left-color: #c5cad4;
+}
+.workbench[data-shell-theme='light'] .dock-head {
+  background: linear-gradient(#e8ecf2, #dde3ec);
+  border-bottom-color: #c5cad4;
+  color: #334155;
+}
+.workbench[data-shell-theme='light'] .statusbar {
+  background: linear-gradient(#e8ecf2, #dde3ec);
+  border-top-color: #c5cad4;
+}
+.workbench[data-shell-theme='light'] .status-js-line {
+  color: #475569;
+}
+.workbench[data-shell-theme='light'] .modal-panel {
+  background: linear-gradient(#fafbfc, #eef1f6);
+  border-color: #aeb6c4;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.15);
+}
+.workbench[data-shell-theme='light'] .modal-head {
+  border-bottom-color: #c5cad4;
+}
+.workbench[data-shell-theme='light'] .modal-head h2 {
+  color: #0f172a;
+}
+.workbench[data-shell-theme='light'] .modal-hint,
+.workbench[data-shell-theme='light'] .hint {
+  color: #64748b;
+}
+.workbench[data-shell-theme='light'] .num,
+.workbench[data-shell-theme='light'] .txt,
+.workbench[data-shell-theme='light'] .sel {
+  background: #fff;
+  border-color: #aeb6c4;
+  color: #1e293b;
+}
+.workbench[data-shell-theme='light'] .field,
+.workbench[data-shell-theme='light'] .check {
+  color: #334155;
+}
+.workbench[data-shell-theme='light'] .field span:first-child {
+  color: #64748b;
+}
+.workbench[data-shell-theme='light'] .log-pre {
+  color: #1e293b;
+}
+.workbench[data-shell-theme='light'] .menu-item.menu-check.checked {
+  background: #d4e4f7;
+  border-color: #5b8fc7;
+}
+.workbench[data-shell-theme='light'] .merge-result-lead strong {
+  color: #b45309;
+}
+.workbench[data-shell-theme='light'] .merge-result-list {
+  color: #0f172a;
 }
 .menubar {
   flex: 0 0 auto;
@@ -1080,6 +1323,43 @@ function openWorkspaceMenu() {
 }
 .menu-pop-wide {
   min-width: 220px;
+}
+.menu-item.menu-check.checked {
+  background: #2a3f5c;
+  border-color: #5a9fd4;
+  border-left: 3px solid #6b9fe0;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.modal-panel.modal-url {
+  width: min(520px, 100%);
+}
+.field.field-block {
+  flex-direction: column;
+  align-items: stretch;
+}
+.field.field-block .txt.url-modal-input {
+  width: 100%;
+  max-width: none;
+}
+.modal-hint.sub-hint {
+  margin-top: -4px;
+  font-size: 10px;
+  opacity: 0.92;
+}
+.mesh-algo-sel {
+  flex: 1 1 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 .toolbar {
   flex: 0 0 auto;
