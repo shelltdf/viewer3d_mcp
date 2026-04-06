@@ -1,7 +1,236 @@
 import * as THREE from 'three'
-import { SkeletonHelper } from 'three'
+import {
+  SkeletonHelper,
+  ShaderChunk,
+  ShaderMaterial,
+  UniformsLib,
+  UniformsUtils,
+} from 'three'
+import { filterAttributeKeysForVertexDebugShader, vertexAttrDisplayName } from './vertexAttrNaming.js'
 
-/** @typedef {{ geometryMode: string, lightingMode: string, textureMode: string, materialMode: string, skeletonMode: string }} ViewportViewState */
+export { vertexAttrDisplayName }
+
+/**
+ * @param {import('three').Object3D | null} root
+ */
+export function collectVertexAttributeNamesForDebug(root) {
+  return filterAttributeKeysForVertexDebugShader(collectVertexAttributeNames(root))
+}
+
+/**
+ * @typedef {{
+ *   geometryMode: string,
+ *   lightingMode: string,
+ *   textureMode: string,
+ *   materialMode: string,
+ *   skeletonMode: string,
+ *   vertexAttrMode?: string
+ * }} ViewportViewState
+ */
+
+/**
+ * @param {import('three').Object3D | null} root
+ * @returns {string[]}
+ */
+export function collectVertexAttributeNames(root) {
+  const set = new Set()
+  if (!root) return []
+  root.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return
+    const g = o.geometry
+    if (!g?.attributes) return
+    for (const k of Object.keys(g.attributes)) set.add(k)
+  })
+  return [...set].sort()
+}
+
+const VERTEX_ATTR_DBG_FRAG = `
+varying vec3 vDbg;
+void main() {
+	gl_FragColor = vec4( vDbg, 1.0 );
+}
+`
+
+/**
+ * @param {string} name
+ */
+function toRgbGlsl(name) {
+  const lower = name.toLowerCase()
+  if (lower === 'position' || lower === 'pos')
+    return 'vec3 c = fract( raw * 0.0625 + 0.5 );'
+  return 'vec3 c = clamp( raw * 0.5 + 0.5, 0.0, 1.0 );'
+}
+
+/**
+ * @param {string} name
+ * @param {number} itemSize
+ */
+function builtinRawAssignNonSkinned(name, itemSize) {
+  if (name === 'position') return 'vec3 raw = position;'
+  if (name === 'normal') return 'vec3 raw = normal;'
+  if (name === 'tangent') return 'vec3 raw = tangent.xyz;'
+  if (name === 'uv' || name === 'uv2' || name === 'uv3') return `vec3 raw = vec3( ${name}, 0.0 );`
+  if (name === 'color') return itemSize >= 4 ? 'vec3 raw = color.xyz;' : 'vec3 raw = color;'
+  if (name === 'COLOR_0') return itemSize >= 4 ? 'vec3 raw = COLOR_0.xyz;' : 'vec3 raw = COLOR_0;'
+  return ''
+}
+
+/**
+ * @param {string} name
+ * @param {number} itemSize
+ */
+function customDeclAndRaw(name, itemSize) {
+  if (itemSize === 1)
+    return { decl: `attribute float ${name};`, raw: `vec3 raw = vec3( ${name}, ${name}, ${name} );` }
+  if (itemSize === 2)
+    return { decl: `attribute vec2 ${name};`, raw: `vec3 raw = vec3( ${name}.xy, 0.0 );` }
+  if (itemSize === 3) return { decl: `attribute vec3 ${name};`, raw: `vec3 raw = ${name};` }
+  return { decl: `attribute vec4 ${name};`, raw: `vec3 raw = ${name}.xyz;` }
+}
+
+/**
+ * @param {import('three').BufferGeometry} geometry
+ * @param {string} name
+ * @param {number} itemSize
+ */
+function buildSkinnedVertexAttrMaterial(geometry, name, itemSize) {
+  /** ShaderMaterial 无 `vertexTangents` 字段；用 `defines` 触发前缀里的 `attribute vec4 tangent`。 */
+  const defines =
+    name === 'tangent' && !!geometry.getAttribute('tangent') ? { USE_TANGENT: '' } : {}
+
+  /** @type {Record<string, string>} */
+  const skinBuiltin = {
+    position: 'vec3 raw = transformed;',
+    normal: 'vec3 raw = transformedNormal;',
+    tangent: 'vec3 raw = transformedTangent;',
+    uv: 'vec3 raw = vec3( uv, 0.0 );',
+    uv2: 'vec3 raw = vec3( uv2, 0.0 );',
+    uv3: 'vec3 raw = vec3( uv3, 0.0 );',
+    skinIndex: 'vec3 raw = skinIndex.xyz;',
+    skinWeight: 'vec3 raw = skinWeight.xyz;',
+  }
+
+  let extraPars = 'varying vec3 vDbg;\n'
+  let rawLine = ''
+
+  if (name === 'color')
+    rawLine = itemSize >= 4 ? 'vec3 raw = color.xyz;' : 'vec3 raw = color;'
+  else if (name === 'COLOR_0')
+    rawLine = itemSize >= 4 ? 'vec3 raw = COLOR_0.xyz;' : 'vec3 raw = COLOR_0;'
+  else if (skinBuiltin[name]) rawLine = skinBuiltin[name]
+  else {
+    const { decl, raw } = customDeclAndRaw(name, itemSize)
+    extraPars += decl + '\n'
+    rawLine = raw
+  }
+
+  const beforeProject = `${rawLine}
+${toRgbGlsl(name)}
+vDbg = c;
+`
+
+  let vert = ShaderChunk.meshbasic_vert
+  vert = vert.replace(
+    '#include <skinning_pars_vertex>',
+    `#include <skinning_pars_vertex>\n${extraPars}`,
+  )
+  vert = vert.replace('#include <project_vertex>', `${beforeProject}\n#include <project_vertex>`)
+
+  const hasMorphPos = !!(geometry.morphAttributes && geometry.morphAttributes.position)
+  const hasMorphNrm = !!(geometry.morphAttributes && geometry.morphAttributes.normal)
+
+  return new ShaderMaterial({
+    defines,
+    uniforms: UniformsUtils.clone(UniformsUtils.merge([UniformsLib.common])),
+    vertexShader: vert,
+    fragmentShader: VERTEX_ATTR_DBG_FRAG,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+    fog: false,
+    lights: false,
+    skinning: true,
+    morphTargets: hasMorphPos,
+    morphNormals: hasMorphNrm,
+  })
+}
+
+/**
+ * @param {import('three').BufferGeometry} geometry
+ * @param {string} mode off | meshNormal | attr:<bufferName>
+ * @param {import('three').Object3D | null} [mesh] 用于 SkinnedMesh 时走骨骼蒙皮顶点着色器
+ * @returns {import('three').Material}
+ */
+export function buildVertexAttrDebugMaterial(geometry, mode, mesh = null) {
+  if (!geometry?.isBufferGeometry) {
+    return new THREE.MeshBasicMaterial({ color: 0x444444, side: THREE.DoubleSide })
+  }
+  if (!mode || mode === 'off') {
+    return new THREE.MeshBasicMaterial({ color: 0x444444, side: THREE.DoubleSide })
+  }
+  if (mode === 'meshNormal') {
+    const m = new THREE.MeshNormalMaterial({ flatShading: false, side: THREE.DoubleSide })
+    m.skinning = !!mesh?.isSkinnedMesh
+    return m
+  }
+  if (!mode.startsWith('attr:')) {
+    return new THREE.MeshBasicMaterial({ color: 0x444444, side: THREE.DoubleSide })
+  }
+  const name = mode.slice(5)
+  const attr = geometry.getAttribute(name)
+  if (!attr) {
+    return new THREE.MeshBasicMaterial({ color: 0x2a2a30, side: THREE.DoubleSide })
+  }
+  if ((name === 'color' || name === 'COLOR_0') && attr.itemSize >= 3) {
+    const m = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    })
+    m.skinning = !!mesh?.isSkinnedMesh
+    return m
+  }
+
+  const itemSize = attr.itemSize
+  if (mesh?.isSkinnedMesh) return buildSkinnedVertexAttrMaterial(geometry, name, itemSize)
+
+  const builtinAssign = builtinRawAssignNonSkinned(name, itemSize)
+  let vert
+  if (builtinAssign) {
+    vert = `
+varying vec3 vDbg;
+void main() {
+	${builtinAssign}
+	${toRgbGlsl(name)}
+	vDbg = c;
+	gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+}
+`
+  } else {
+    const { decl, raw } = customDeclAndRaw(name, itemSize)
+    vert = `
+${decl}
+varying vec3 vDbg;
+void main() {
+	${raw}
+	${toRgbGlsl(name)}
+	vDbg = c;
+	gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+}
+`
+  }
+
+  const defines = name === 'tangent' && !!geometry.getAttribute('tangent') ? { USE_TANGENT: '' } : {}
+
+  return new ShaderMaterial({
+    defines,
+    vertexShader: vert,
+    fragmentShader: VERTEX_ATTR_DBG_FRAG,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+    fog: false,
+    lights: false,
+  })
+}
 
 const saved = new WeakMap()
 
@@ -123,6 +352,7 @@ export function applyViewportViewState(root, state, ctx, scene) {
   const textureMode = state.textureMode || 'full'
   const materialMode = state.materialMode || 'original'
   const skeletonMode = state.skeletonMode || 'off'
+  const vertexAttrMode = state.vertexAttrMode || 'off'
 
   applySceneLighting(scene, lightingMode)
 
@@ -151,7 +381,15 @@ export function applyViewportViewState(root, state, ctx, scene) {
   }
 
   if (geometryMode !== 'points') {
-    if (materialMode === 'normal') {
+    if (vertexAttrMode !== 'off') {
+      root.traverse((o) => {
+        if (!o.isMesh && !o.isSkinnedMesh) return
+        const g = o.geometry
+        if (!g?.attributes?.position) return
+        saveOriginal(o)
+        o.material = buildVertexAttrDebugMaterial(g, vertexAttrMode, o)
+      })
+    } else if (materialMode === 'normal') {
       root.traverse((o) => {
         if (!o.isMesh && !o.isSkinnedMesh) return
         saveOriginal(o)
@@ -264,6 +502,7 @@ export function applyDisplayMode(root, mode, ctx) {
       textureMode: 'full',
       materialMode: 'original',
       skeletonMode: 'off',
+      vertexAttrMode: 'off',
     },
     wireframe: {
       geometryMode: 'wireframe',
@@ -271,6 +510,7 @@ export function applyDisplayMode(root, mode, ctx) {
       textureMode: 'full',
       materialMode: 'original',
       skeletonMode: 'off',
+      vertexAttrMode: 'off',
     },
     albedo: {
       geometryMode: 'solid',
@@ -278,6 +518,7 @@ export function applyDisplayMode(root, mode, ctx) {
       textureMode: 'albedoFlat',
       materialMode: 'original',
       skeletonMode: 'off',
+      vertexAttrMode: 'off',
     },
     normals: {
       geometryMode: 'solid',
@@ -285,6 +526,7 @@ export function applyDisplayMode(root, mode, ctx) {
       textureMode: 'full',
       materialMode: 'normal',
       skeletonMode: 'off',
+      vertexAttrMode: 'off',
     },
     vertices: {
       geometryMode: 'points',
@@ -292,6 +534,7 @@ export function applyDisplayMode(root, mode, ctx) {
       textureMode: 'full',
       materialMode: 'original',
       skeletonMode: 'off',
+      vertexAttrMode: 'off',
     },
     skeleton: {
       geometryMode: 'solid',
@@ -299,6 +542,7 @@ export function applyDisplayMode(root, mode, ctx) {
       textureMode: 'full',
       materialMode: 'original',
       skeletonMode: 'bones',
+      vertexAttrMode: 'off',
     },
   }
   const st = mapLegacy[mode] || mapLegacy.shaded

@@ -9,7 +9,12 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { buildRichOutline } from '../utils/outline.js'
-import { computeMeshStats, applyLodDrawRange } from '../utils/meshStats.js'
+import {
+  computeMeshStats,
+  computeSceneResourceCounts,
+  applyLodDrawRange,
+  invalidateLodCacheForRoot,
+} from '../utils/meshStats.js'
 import { findObject3DByUuid, findMaterialByUuid, findTextureByUuid } from '../utils/selectionResolve.js'
 import { attachCompressedTextureHandlers } from '../utils/attachTextureHandlers.js'
 import { estimateSceneMemory } from '../utils/memoryEstimate.js'
@@ -23,8 +28,14 @@ import {
   mergeMeshInstances,
 } from '../utils/analyzeDuplicateResources.js'
 import { buildSceneResourceGraph } from '../utils/sceneResourceGraph.js'
-import { applyViewportViewState, clearSkeletonHelpers } from '../utils/displayModeHelpers.js'
-import { applyRendererToneAndPipeline, applyViewportShadows } from '../utils/viewportRenderSettings.js'
+import {
+  applyViewportViewState,
+  clearSkeletonHelpers,
+  collectVertexAttributeNamesForDebug,
+  vertexAttrDisplayName,
+} from '../utils/displayModeHelpers.js'
+import { deepCloneMeshGeometries, isolateResultBranchResources } from '../utils/isolateResultResources.js'
+import { applyRendererToneAndPipeline, applyDualViewportShadows } from '../utils/viewportRenderSettings.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
@@ -53,8 +64,28 @@ const statsSource = ref({ meshes: 0, triangles: 0, vertices: 0 })
 const statsResult = ref({ meshes: 0, triangles: 0, vertices: 0 })
 
 const linkCameras = ref(true)
-const viewHudSource = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
-const viewHudResult = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
+const viewHudSource = ref({
+  cpu: 0,
+  vram: 0,
+  geo: 0,
+  tex: 0,
+  meshes: 0,
+  triangles: 0,
+  vertices: 0,
+  materials: 0,
+  texturesScene: 0,
+})
+const viewHudResult = ref({
+  cpu: 0,
+  vram: 0,
+  geo: 0,
+  tex: 0,
+  meshes: 0,
+  triangles: 0,
+  vertices: 0,
+  materials: 0,
+  texturesScene: 0,
+})
 
 function defaultViewState() {
   return {
@@ -63,19 +94,61 @@ function defaultViewState() {
     textureMode: 'full',
     materialMode: 'original',
     skeletonMode: 'off',
+    vertexAttrMode: 'off',
   }
 }
 
 /** 处理前 / 处理后各自独立的显示状态（与 Three 场景无响应式绑定，修改后由 watch 应用） */
 const viewStateSource = ref(defaultViewState())
 const viewStateResult = ref(defaultViewState())
-const hudExpanded = ref(true)
-/** 两侧视口共用的渲染策略（WebGL 前向渲染 + 可选后期） */
-const renderSettings = ref({
+const hudExpandedSource = ref(true)
+const hudExpandedResult = ref(true)
+/** 左右视口各自的渲染策略（管线 / 阴影 / HDR / SSAO 互不联动） */
+const renderSettingsSource = ref({
   pipeline: 'pbr',
   shadow: 'off',
   hdr: 'on',
   ssao: 'off',
+})
+const renderSettingsResult = ref({
+  pipeline: 'pbr',
+  shadow: 'off',
+  hdr: 'on',
+  ssao: 'off',
+})
+const vertexAttrNamesSource = ref([])
+const vertexAttrNamesResult = ref([])
+
+function refreshVertexAttrNameLists() {
+  vertexAttrNamesSource.value = collectVertexAttributeNamesForDebug(sourceRoot)
+  vertexAttrNamesResult.value = collectVertexAttributeNamesForDebug(resultRoot)
+}
+
+/** 处理后网格改索引 / 切线等之后：重算 LOD draw range 并重应用右侧视口材质，避免「整模消失」或属性面板解析失败 */
+function afterResultGeometryMutation() {
+  if (!resultRoot) return
+  try {
+    invalidateLodCacheForRoot(resultRoot)
+    applyLodDrawRange(resultRoot, lodResult.value)
+    reapplyViewResult()
+  } catch (err) {
+    emit('viewer-error', err?.message || String(err))
+  }
+}
+
+watch(vertexAttrNamesSource, (names) => {
+  const m = viewStateSource.value.vertexAttrMode
+  if (typeof m === 'string' && m.startsWith('attr:')) {
+    const k = m.slice(5)
+    if (k && !names.includes(k)) viewStateSource.value.vertexAttrMode = 'off'
+  }
+})
+watch(vertexAttrNamesResult, (names) => {
+  const m = viewStateResult.value.vertexAttrMode
+  if (typeof m === 'string' && m.startsWith('attr:')) {
+    const k = m.slice(5)
+    if (k && !names.includes(k)) viewStateResult.value.vertexAttrMode = 'off'
+  }
 })
 const displayCtxA = { skeletonHelpers: [] }
 const displayCtxB = { skeletonHelpers: [] }
@@ -213,48 +286,53 @@ function disposePostProcess() {
 
 function rebuildPostProcess() {
   disposePostProcess()
-  const rs = renderSettings.value
-  if (rs.ssao !== 'on') return
+  const rsA = renderSettingsSource.value
+  const rsB = renderSettingsResult.value
   if (!rendererA || !rendererB || !sceneA || !sceneB || !cameraA || !cameraB) return
   const elA = sourceEl.value
   const elB = resultEl.value
-  if (!elA?.clientWidth || !elB?.clientWidth) return
-
-  const wA = elA.clientWidth
-  const hA = elA.clientHeight
-  const wB = elB.clientWidth
-  const hB = elB.clientHeight
+  const wA = elA?.clientWidth || 0
+  const hA = elA?.clientHeight || 0
+  const wB = elB?.clientWidth || 0
+  const hB = elB?.clientHeight || 0
   const prA = rendererA.getPixelRatio()
   const prB = rendererB.getPixelRatio()
 
-  composerA = new EffectComposer(rendererA)
-  composerA.addPass(new RenderPass(sceneA, cameraA))
-  ssaoPassA = new SSAOPass(sceneA, cameraA, wA, hA)
-  ssaoPassA.kernelRadius = 12
-  composerA.addPass(ssaoPassA)
-  composerA.setPixelRatio(prA)
-  composerA.setSize(wA, hA)
+  if (rsA.ssao === 'on' && wA && hA) {
+    composerA = new EffectComposer(rendererA)
+    composerA.addPass(new RenderPass(sceneA, cameraA))
+    ssaoPassA = new SSAOPass(sceneA, cameraA, wA, hA)
+    ssaoPassA.kernelRadius = 12
+    composerA.addPass(ssaoPassA)
+    composerA.setPixelRatio(prA)
+    composerA.setSize(wA, hA)
+  }
 
-  composerB = new EffectComposer(rendererB)
-  composerB.addPass(new RenderPass(sceneB, cameraB))
-  ssaoPassB = new SSAOPass(sceneB, cameraB, wB, hB)
-  ssaoPassB.kernelRadius = 12
-  composerB.addPass(ssaoPassB)
-  composerB.setPixelRatio(prB)
-  composerB.setSize(wB, hB)
+  if (rsB.ssao === 'on' && wB && hB) {
+    composerB = new EffectComposer(rendererB)
+    composerB.addPass(new RenderPass(sceneB, cameraB))
+    ssaoPassB = new SSAOPass(sceneB, cameraB, wB, hB)
+    ssaoPassB.kernelRadius = 12
+    composerB.addPass(ssaoPassB)
+    composerB.setPixelRatio(prB)
+    composerB.setSize(wB, hB)
+  }
 }
 
 function applyGlobalRendererSettings() {
-  const rs = renderSettings.value
-  const hdrOn = rs.hdr === 'on'
-  applyRendererToneAndPipeline(rendererA, rs.pipeline, hdrOn)
-  applyRendererToneAndPipeline(rendererB, rs.pipeline, hdrOn)
-  applyViewportShadows(
-    [sceneA, sceneB],
+  const rsA = renderSettingsSource.value
+  const rsB = renderSettingsResult.value
+  applyRendererToneAndPipeline(rendererA, rsA.pipeline, rsA.hdr === 'on')
+  applyRendererToneAndPipeline(rendererB, rsB.pipeline, rsB.hdr === 'on')
+  applyDualViewportShadows(
+    sceneA,
     sourceRoot,
+    rendererA,
+    rsA.shadow === 'on' ? 'on' : 'off',
+    sceneB,
     resultRoot,
-    [rendererA, rendererB],
-    rs.shadow === 'on' ? 'on' : 'off',
+    rendererB,
+    rsB.shadow === 'on' ? 'on' : 'off',
   )
   rebuildPostProcess()
 }
@@ -334,6 +412,7 @@ function clearSource() {
     disposeObject3D(sourceRoot)
     sourceRoot = undefined
   }
+  vertexAttrNamesSource.value = []
 }
 
 function clearResult() {
@@ -348,6 +427,7 @@ function clearResult() {
     resultRoot = undefined
   }
   statsResult.value = { meshes: 0, triangles: 0, vertices: 0 }
+  vertexAttrNamesResult.value = []
 }
 
 function applyObject3DToSource(object) {
@@ -531,6 +611,8 @@ function syncResultFromSource(opts = {}) {
   resultClips = [...sourceClips]
   try {
     resultRoot = cloneSkinned(sourceRoot)
+    deepCloneMeshGeometries(resultRoot)
+    isolateResultBranchResources(resultRoot)
     resultRoot.traverse((obj) => {
       if (obj.isMesh || obj.isSkinnedMesh || obj.isPoints) obj.frustumCulled = false
     })
@@ -550,6 +632,7 @@ function syncResultFromSource(opts = {}) {
       clips: resultClips,
     })
     if (!opts.skipStatus) emit('status', '已生成处理后预览（网格克隆）')
+    refreshVertexAttrNameLists()
     applyGlobalRendererSettings()
     onResize()
   } catch (e) {
@@ -558,36 +641,44 @@ function syncResultFromSource(opts = {}) {
 }
 
 function resolveOutlineItem(panel, item) {
-  if (!item) return { kind: 'empty' }
-  if (item.refType === 'none' || item.category === 'section') {
-    return { kind: 'section', label: item.label }
-  }
-  const root = panel === 'source' ? sourceRoot : resultRoot
-  const clips = panel === 'source' ? sourceClips : resultClips
-  if (!root) return { kind: 'empty' }
-  if (item.refType === 'object3d') {
-    const object = findObject3DByUuid(root, item.refId)
-    if (!object) return { kind: 'empty' }
-    const meshInfo = aggregateMeshInfoUnderNode(object)
-    let meshMaterialInfo = null
-    if (object.isMesh || object.isSkinnedMesh) {
-      meshMaterialInfo = getMeshMaterialsMemoryTable(object)
+  try {
+    if (!item) return { kind: 'empty' }
+    if (item.refType === 'none' || item.category === 'section') {
+      return { kind: 'section', label: item.label }
     }
-    return { kind: 'object3d', object, meshInfo, meshMaterialInfo }
+    const root = panel === 'source' ? sourceRoot : resultRoot
+    const clips = panel === 'source' ? sourceClips : resultClips
+    if (!root) return { kind: 'empty' }
+    if (item.refType === 'object3d') {
+      const object = findObject3DByUuid(root, item.refId)
+      if (!object) return { kind: 'empty' }
+      const meshInfo = aggregateMeshInfoUnderNode(object)
+      let meshMaterialInfo = null
+      if (object.isMesh || object.isSkinnedMesh) {
+        try {
+          meshMaterialInfo = getMeshMaterialsMemoryTable(object)
+        } catch {
+          meshMaterialInfo = null
+        }
+      }
+      return { kind: 'object3d', object, meshInfo, meshMaterialInfo }
+    }
+    if (item.refType === 'material') {
+      const material = findMaterialByUuid(root, item.refId)
+      return material ? { kind: 'material', material } : { kind: 'empty' }
+    }
+    if (item.refType === 'texture') {
+      const texture = findTextureByUuid(root, item.refId)
+      return texture ? { kind: 'texture', texture } : { kind: 'empty' }
+    }
+    if (item.refType === 'clip') {
+      const clip = clips[item.refId]
+      return clip ? { kind: 'clip', clip } : { kind: 'empty' }
+    }
+    return { kind: 'empty' }
+  } catch {
+    return { kind: 'empty' }
   }
-  if (item.refType === 'material') {
-    const material = findMaterialByUuid(root, item.refId)
-    return material ? { kind: 'material', material } : { kind: 'empty' }
-  }
-  if (item.refType === 'texture') {
-    const texture = findTextureByUuid(root, item.refId)
-    return texture ? { kind: 'texture', texture } : { kind: 'empty' }
-  }
-  if (item.refType === 'clip') {
-    const clip = clips[item.refId]
-    return clip ? { kind: 'clip', clip } : { kind: 'empty' }
-  }
-  return { kind: 'empty' }
 }
 
 watch(lodResult, (v) => {
@@ -616,7 +707,7 @@ watch(
 )
 
 watch(
-  renderSettings,
+  [renderSettingsSource, renderSettingsResult],
   () => {
     applyGlobalRendererSettings()
     onResize()
@@ -624,15 +715,21 @@ watch(
   { deep: true },
 )
 
+function maybeRaytraceHint(pipeline) {
+  if (pipeline === 'raytrace')
+    emit(
+      'status',
+      '「光追」模式占位：标准 WebGL 无实时硬件光追；当前与 PBR 前向路径等效，离线路径追踪可后续接入',
+    )
+}
+
 watch(
-  () => renderSettings.value.pipeline,
-  (p) => {
-    if (p === 'raytrace')
-      emit(
-        'status',
-        '「光追」模式占位：标准 WebGL 无实时硬件光追；当前与 PBR 前向路径等效，离线路径追踪可后续接入',
-      )
-  },
+  () => renderSettingsSource.value.pipeline,
+  (p) => maybeRaytraceHint(p),
+)
+watch(
+  () => renderSettingsResult.value.pipeline,
+  (p) => maybeRaytraceHint(p),
 )
 
 async function loadUrl(url) {
@@ -777,10 +874,23 @@ async function loadFiles(fileList) {
 
 function refreshViewHud(root, renderer, targetRef) {
   if (!root) {
-    targetRef.value = { cpu: 0, vram: 0, geo: 0, tex: 0 }
+    targetRef.value = {
+      cpu: 0,
+      vram: 0,
+      geo: 0,
+      tex: 0,
+      meshes: 0,
+      triangles: 0,
+      vertices: 0,
+      materials: 0,
+      texturesScene: 0,
+      geometries: 0,
+      textures: 0,
+    }
     return
   }
   const est = estimateSceneMemory(root)
+  const cnt = computeSceneResourceCounts(root)
   const geo = est.breakdown.find((b) => b.id === 'geo')?.bytes || 0
   const tex = est.breakdown.find((b) => b.id === 'tex')?.bytes || 0
   const vramEst = geo + tex
@@ -790,6 +900,11 @@ function refreshViewHud(root, renderer, targetRef) {
     vram: vramEst,
     geo,
     tex,
+    meshes: cnt.meshes,
+    triangles: cnt.triangles,
+    vertices: cnt.vertices,
+    materials: cnt.materials,
+    texturesScene: cnt.textures,
     geometries: info?.geometries ?? 0,
     textures: info?.textures ?? 0,
   }
@@ -843,8 +958,8 @@ function animate() {
       },
     })
   }
-  const useCompA = composerA && renderSettings.value.ssao === 'on'
-  const useCompB = composerB && renderSettings.value.ssao === 'on'
+  const useCompA = composerA && renderSettingsSource.value.ssao === 'on'
+  const useCompB = composerB && renderSettingsResult.value.ssao === 'on'
   if (useCompA) composerA.render(delta)
   else if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
   if (useCompB) composerB.render(delta)
@@ -1014,10 +1129,10 @@ function applyDuplicateMerges(payload) {
   let nodesRemoved = 0
   for (const op of ops) {
     if (op.kind === 'texture') {
-      const r = mergeTextureGroup(root, op.textures, op.keepUuid)
+      const r = mergeTextureGroup(root, op.textures, op.keepUuid, [sourceRoot])
       textureMerged += r.merged
     } else if (op.kind === 'material') {
-      const r = mergeMaterialGroup(root, op.materials, op.keepUuid)
+      const r = mergeMaterialGroup(root, op.materials, op.keepUuid, [sourceRoot])
       materialMerged += r.merged
     } else if (op.kind === 'object' || op.kind === 'mesh') {
       const r = mergeMeshInstances(op.keepUuid, op.items)
@@ -1025,6 +1140,7 @@ function applyDuplicateMerges(payload) {
     }
   }
   refreshOutline('result')
+  refreshVertexAttrNameLists()
   return { textureMerged, materialMerged, nodesRemoved, groupsApplied: ops.length }
 }
 
@@ -1038,6 +1154,8 @@ defineExpose({
   getDuplicateAnalysis,
   getResourceGraph,
   applyDuplicateMerges,
+  refreshVertexAttrNameLists,
+  afterResultGeometryMutation,
   linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)
@@ -1079,6 +1197,13 @@ defineExpose({
             <option value="wireframe">线框</option>
             <option value="points">点云</option>
           </select>
+          <select v-model="viewStateSource.vertexAttrMode" class="vt-sel vt-sel-wide" title="将顶点缓冲区映射为着色；点云模式下不生效">
+            <option value="off">顶点属性·关</option>
+            <option value="meshNormal">顶点属性·三角法线</option>
+            <option v-for="n in vertexAttrNamesSource" :key="'va-src-' + n" :value="'attr:' + n">
+              顶点属性·{{ vertexAttrDisplayName(n) }}
+            </option>
+          </select>
           <select v-model="viewStateSource.lightingMode" class="vt-sel">
             <option value="studio">光照·影棚</option>
             <option value="soft">光照·柔和</option>
@@ -1101,11 +1226,11 @@ defineExpose({
           </select>
         </div>
       </div>
-      <div class="vp-render-row" title="两侧视口共用同一套 WebGL 策略（任选一侧调节即可）">
+      <div class="vp-render-row" title="仅影响左侧视口 WebGL 与后期">
         <span class="vp-render-title">渲染与效果</span>
         <label class="vp-gl">
           <span>管线</span>
-          <select v-model="renderSettings.pipeline" class="vt-sel vt-sel-wide">
+          <select v-model="renderSettingsSource.pipeline" class="vt-sel vt-sel-wide">
             <option value="classic">固定流水线</option>
             <option value="pbr">PBR</option>
             <option value="raytrace">光追（占位）</option>
@@ -1113,21 +1238,21 @@ defineExpose({
         </label>
         <label class="vp-gl">
           <span>阴影</span>
-          <select v-model="renderSettings.shadow" class="vt-sel">
+          <select v-model="renderSettingsSource.shadow" class="vt-sel">
             <option value="off">关</option>
             <option value="on">平行光阴影</option>
           </select>
         </label>
         <label class="vp-gl">
           <span>HDR</span>
-          <select v-model="renderSettings.hdr" class="vt-sel">
+          <select v-model="renderSettingsSource.hdr" class="vt-sel">
             <option value="off">关</option>
             <option value="on">ACES</option>
           </select>
         </label>
         <label class="vp-gl">
           <span>SSAO</span>
-          <select v-model="renderSettings.ssao" class="vt-sel">
+          <select v-model="renderSettingsSource.ssao" class="vt-sel">
             <option value="off">关</option>
             <option value="on">屏幕空间 AO</option>
           </select>
@@ -1135,34 +1260,40 @@ defineExpose({
       </div>
       <div ref="sourceCanvasWrapRef" class="vp-canvas-wrap">
         <div ref="sourceEl" class="vp-canvas" />
-        <div class="vp-mem-corner vp-mem-corner--src" title="本格粗估：CPU 总占用与显存相关字节">
-          <span class="mem-corner-label">存储估</span>
+        <div
+          class="vp-mem-corner vp-mem-corner--src"
+          title="左上角：场景资源计数；本格粗估：CPU 总占用与显存相关字节；GL 为 WebGL 本上下文计数"
+        >
+          <span class="mem-corner-label">场景 / 存储</span>
+          <span class="mem-corner-counts"
+            >△{{ viewHudSource.triangles.toLocaleString() }} · 顶点
+            {{ viewHudSource.vertices.toLocaleString() }} · Mesh {{ viewHudSource.meshes }} · 材质
+            {{ viewHudSource.materials }} · 贴图 {{ viewHudSource.texturesScene }}</span
+          >
           <span class="mem-corner-main"
             >{{ fmtBytes(viewHudSource.cpu) }} · VRAM≈{{ fmtBytes(viewHudSource.vram) }}</span
           >
           <span class="mem-corner-sub"
-            >Geo {{ fmtBytes(viewHudSource.geo) }} · Tex {{ fmtBytes(viewHudSource.tex) }} · GL
+            >Geo {{ fmtBytes(viewHudSource.geo) }} · Tex {{ fmtBytes(viewHudSource.tex) }} · GL 几何/纹理
             {{ viewHudSource.geometries }}/{{ viewHudSource.textures }}</span
           >
         </div>
         <button
           type="button"
           class="hud-toggle"
-          :title="hudExpanded ? '折叠信息面板' : '展开信息面板'"
-          @click="hudExpanded = !hudExpanded"
+          :title="hudExpandedSource ? '折叠信息面板' : '展开信息面板'"
+          @click="hudExpandedSource = !hudExpandedSource"
         >
-          {{ hudExpanded ? '▼ 信息' : '▲ 信息' }}
+          {{ hudExpandedSource ? '▼ 信息' : '▲ 信息' }}
         </button>
-        <div v-if="hudExpanded" class="vp-hud">
+        <div v-if="hudExpandedSource" class="vp-hud">
           <div class="hud-stats">
             三角面 {{ statsSource.triangles.toLocaleString() }} · 顶点 {{ statsSource.vertices.toLocaleString() }} · Mesh
             {{ statsSource.meshes }}
           </div>
-          <label class="hud-link">
-            <input v-model="linkCameras" type="checkbox" />
-            联动观察
-          </label>
-          <div class="hud-readonly-note">源网格 LOD 固定 100%（只读）</div>
+          <div class="hud-readonly-note">
+            源网格 LOD 固定 100%（只读）。左右「渲染与效果」互不联动；仅相机可选「联动观察」见工作台工具栏。
+          </div>
         </div>
         <div v-else class="vp-hud vp-hud-compact">
           <span class="hud-mini-line">△ {{ statsSource.triangles.toLocaleString() }}（详情见左上角存储估）</span>
@@ -1177,6 +1308,13 @@ defineExpose({
             <option value="solid">实体</option>
             <option value="wireframe">线框</option>
             <option value="points">点云</option>
+          </select>
+          <select v-model="viewStateResult.vertexAttrMode" class="vt-sel vt-sel-wide" title="将顶点缓冲区映射为着色；点云模式下不生效">
+            <option value="off">顶点属性·关</option>
+            <option value="meshNormal">顶点属性·三角法线</option>
+            <option v-for="n in vertexAttrNamesResult" :key="'va-dst-' + n" :value="'attr:' + n">
+              顶点属性·{{ vertexAttrDisplayName(n) }}
+            </option>
           </select>
           <select v-model="viewStateResult.lightingMode" class="vt-sel">
             <option value="studio">光照·影棚</option>
@@ -1200,11 +1338,11 @@ defineExpose({
           </select>
         </div>
       </div>
-      <div class="vp-render-row" title="两侧视口共用同一套 WebGL 策略（与左侧保持一致）">
+      <div class="vp-render-row" title="仅影响右侧视口 WebGL 与后期">
         <span class="vp-render-title">渲染与效果</span>
         <label class="vp-gl">
           <span>管线</span>
-          <select v-model="renderSettings.pipeline" class="vt-sel vt-sel-wide">
+          <select v-model="renderSettingsResult.pipeline" class="vt-sel vt-sel-wide">
             <option value="classic">固定流水线</option>
             <option value="pbr">PBR</option>
             <option value="raytrace">光追（占位）</option>
@@ -1212,21 +1350,21 @@ defineExpose({
         </label>
         <label class="vp-gl">
           <span>阴影</span>
-          <select v-model="renderSettings.shadow" class="vt-sel">
+          <select v-model="renderSettingsResult.shadow" class="vt-sel">
             <option value="off">关</option>
             <option value="on">平行光阴影</option>
           </select>
         </label>
         <label class="vp-gl">
           <span>HDR</span>
-          <select v-model="renderSettings.hdr" class="vt-sel">
+          <select v-model="renderSettingsResult.hdr" class="vt-sel">
             <option value="off">关</option>
             <option value="on">ACES</option>
           </select>
         </label>
         <label class="vp-gl">
           <span>SSAO</span>
-          <select v-model="renderSettings.ssao" class="vt-sel">
+          <select v-model="renderSettingsResult.ssao" class="vt-sel">
             <option value="off">关</option>
             <option value="on">屏幕空间 AO</option>
           </select>
@@ -1234,33 +1372,37 @@ defineExpose({
       </div>
       <div ref="resultCanvasWrapRef" class="vp-canvas-wrap">
         <div ref="resultEl" class="vp-canvas" />
-        <div class="vp-mem-corner vp-mem-corner--dst" title="本格粗估：CPU 总占用与显存相关字节">
-          <span class="mem-corner-label">存储估</span>
+        <div
+          class="vp-mem-corner vp-mem-corner--dst"
+          title="左上角：场景资源计数；本格粗估：CPU 总占用与显存相关字节；GL 为 WebGL 本上下文计数"
+        >
+          <span class="mem-corner-label">场景 / 存储</span>
+          <span class="mem-corner-counts"
+            >△{{ viewHudResult.triangles.toLocaleString() }} · 顶点
+            {{ viewHudResult.vertices.toLocaleString() }} · Mesh {{ viewHudResult.meshes }} · 材质
+            {{ viewHudResult.materials }} · 贴图 {{ viewHudResult.texturesScene }}</span
+          >
           <span class="mem-corner-main"
             >{{ fmtBytes(viewHudResult.cpu) }} · VRAM≈{{ fmtBytes(viewHudResult.vram) }}</span
           >
           <span class="mem-corner-sub"
-            >Geo {{ fmtBytes(viewHudResult.geo) }} · Tex {{ fmtBytes(viewHudResult.tex) }} · GL
+            >Geo {{ fmtBytes(viewHudResult.geo) }} · Tex {{ fmtBytes(viewHudResult.tex) }} · GL 几何/纹理
             {{ viewHudResult.geometries }}/{{ viewHudResult.textures }}</span
           >
         </div>
         <button
           type="button"
           class="hud-toggle"
-          :title="hudExpanded ? '折叠信息面板' : '展开信息面板'"
-          @click="hudExpanded = !hudExpanded"
+          :title="hudExpandedResult ? '折叠信息面板' : '展开信息面板'"
+          @click="hudExpandedResult = !hudExpandedResult"
         >
-          {{ hudExpanded ? '▼ 信息' : '▲ 信息' }}
+          {{ hudExpandedResult ? '▼ 信息' : '▲ 信息' }}
         </button>
-        <div v-if="hudExpanded" class="vp-hud">
+        <div v-if="hudExpandedResult" class="vp-hud">
           <div class="hud-stats">
             三角面 {{ statsResult.triangles.toLocaleString() }} · 顶点 {{ statsResult.vertices.toLocaleString() }} · Mesh
-            {{ statsResult.meshes }}
+            {{ statsResult.meshes }}（本侧 LOD 仅影响右侧几何副本）
           </div>
-          <label class="hud-link">
-            <input v-model="linkCameras" type="checkbox" />
-            联动观察
-          </label>
           <label class="hud-lod">
             <span>LOD</span>
             <input v-model.number="lodResult" type="range" min="0.02" max="1" step="0.02" />
@@ -1486,7 +1628,7 @@ defineExpose({
   top: 8px;
   left: 8px;
   z-index: 3;
-  max-width: min(340px, calc(100% - 96px));
+  max-width: min(400px, calc(100% - 96px));
   padding: 5px 8px;
   font-size: 10px;
   line-height: 1.35;
@@ -1513,6 +1655,17 @@ defineExpose({
   letter-spacing: 0.06em;
   color: #8eb8d8;
   margin-bottom: 2px;
+}
+.mem-corner-counts {
+  display: block;
+  font-size: 9px;
+  line-height: 1.35;
+  color: #b8d4f0;
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.vp-mem-corner--dst .mem-corner-counts {
+  color: #f0dcc0;
 }
 .vp-mem-corner--dst .mem-corner-label {
   color: #d8b88e;
@@ -1554,16 +1707,6 @@ defineExpose({
   flex: 1 1 100%;
   min-width: 0;
   font-variant-numeric: tabular-nums;
-}
-.hud-link {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  margin: 0;
-  font-size: 10px;
-  color: #b8c8e0;
-  cursor: pointer;
 }
 .hud-lod {
   display: flex;

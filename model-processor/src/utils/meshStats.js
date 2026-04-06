@@ -1,3 +1,5 @@
+import { MATERIAL_MAP_KEYS } from './analyzeDuplicateResources.js'
+
 /**
  * @param {import('three').Object3D | null} root
  */
@@ -20,6 +22,35 @@ export function computeMeshStats(root) {
     if (pos) vertices += pos.count
   })
   return { meshes, triangles, vertices }
+}
+
+/**
+ * 场景内可渲染资源计数（Mesh / 三角面 / 顶点 / 唯一材质 / 唯一贴图槽实例）
+ * @param {import('three').Object3D | null} root
+ */
+export function computeSceneResourceCounts(root) {
+  const { meshes, triangles, vertices } = computeMeshStats(root)
+  const materialUuids = new Set()
+  const textureUuids = new Set()
+  root?.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const m of mats) {
+      if (!m) continue
+      materialUuids.add(m.uuid)
+      for (const k of MATERIAL_MAP_KEYS) {
+        const t = m[k]
+        if (t?.isTexture) textureUuids.add(t.uuid)
+      }
+    }
+  })
+  return {
+    meshes,
+    triangles,
+    vertices,
+    materials: materialUuids.size,
+    textures: textureUuids.size,
+  }
 }
 
 const _lodBackup = new WeakMap()
@@ -55,5 +86,16 @@ export function resetLodDrawRange(root) {
     if (!g || !g.isBufferGeometry) return
     const b = _lodBackup.get(g)
     if (b) g.setDrawRange(0, b.maxIndex)
+  })
+}
+
+/**
+ * 几何在运行时被写入 index / 顶点缓冲后，LOD 缓存的 maxIndex 可能与当前 index 语义不一致，需丢弃后重算。
+ * @param {import('three').Object3D | null} root
+ */
+export function invalidateLodCacheForRoot(root) {
+  root?.traverse((obj) => {
+    const g = obj.geometry
+    if (g?.isBufferGeometry) _lodBackup.delete(g)
   })
 }

@@ -6,11 +6,20 @@ import PropertyInspector from './PropertyInspector.vue'
 import PreviewLightbox from './PreviewLightbox.vue'
 import MemoryEstimateModal from './MemoryEstimateModal.vue'
 import DuplicateResourceModal from './DuplicateResourceModal.vue'
+import UvEditorWindow from './UvEditorWindow.vue'
 import { useLocalWorkspace } from '../composables/useLocalWorkspace.js'
 import { useActivityLog } from '../composables/useActivityLog.js'
 
 const dualRef = ref(null)
 const fileInputRef = ref(null)
+
+const linkCamerasLinked = computed({
+  get: () => dualRef.value?.linkCameras?.value ?? true,
+  set: (v) => {
+    const lc = dualRef.value?.linkCameras
+    if (lc) lc.value = v
+  },
+})
 
 const urlInput = ref('')
 const statusText = ref('就绪')
@@ -32,8 +41,16 @@ const showLogModal = ref(false)
 const showMemoryModal = ref(false)
 const memoryPanel = ref('source')
 const showDuplicateModal = ref(false)
+const uvWindowOpen = ref(false)
+/** @type {import('vue').Ref<import('three').Mesh | import('three').SkinnedMesh | null>} */
+const uvWindowMesh = ref(null)
+const uvWindowLabel = ref('')
+const uvWindowReadOnly = ref(true)
 /** 递增以使重复资源弹窗在合并后重新拉取分析（Three 场景非响应式，避免 computed 缓存陈旧数据） */
 const dupSceneRevision = ref(0)
+/** 执行「重复资源合并」后的结果摘要弹窗 */
+const showMergeResultDialog = ref(false)
+const mergeResultLines = ref([])
 /** 双视口：可单独或同时显示「处理前 / 处理后」格子（至少保留一侧） */
 const showViewportSource = ref(true)
 const showViewportResult = ref(true)
@@ -180,7 +197,24 @@ function onInspectorAction(e) {
     setStatus('压缩贴图：占位（需接入压缩管线或后端）', 'ok')
   } else if (e?.type === 'texture-decompress') {
     setStatus('解压贴图：占位（需接入解压管线）', 'ok')
+  } else if (e?.type === 'vertex-attrs-changed') {
+    dualRef.value?.refreshVertexAttrNameLists?.()
+    dualRef.value?.afterResultGeometryMutation?.()
+    setStatus('已更新网格顶点属性（下拉列表已刷新）', 'ok')
+  } else if (e?.type === 'inspector-status') {
+    const msg = e.message || ''
+    setStatus(msg, e.level === 'error' ? 'error' : 'ok')
+  } else if (e?.type === 'open-uv-window') {
+    uvWindowMesh.value = e.object || null
+    uvWindowLabel.value = e.label || e.object?.name || e.object?.uuid || 'Mesh'
+    uvWindowReadOnly.value = e.panel === 'source'
+    uvWindowOpen.value = true
   }
+}
+
+function onUvWindowEdited() {
+  dualRef.value?.refreshVertexAttrNameLists?.()
+  setStatus('UV 已更新（视窗编辑）', 'ok')
 }
 
 function closeLightbox() {
@@ -203,18 +237,23 @@ function onDuplicateMerge(payload) {
   const summary = dualRef.value?.applyDuplicateMerges?.(payload) ?? {}
   dupSceneRevision.value += 1
 
-  const parts = []
+  const lines = []
   if (summary.textureMerged)
-    parts.push(`贴图合并省去 ${summary.textureMerged} 份 Texture 实例`)
+    lines.push(`贴图：已合并 / 省去 ${summary.textureMerged} 份 Texture 实例`)
   if (summary.materialMerged)
-    parts.push(`材质合并省去 ${summary.materialMerged} 份 Material 实例`)
-  if (summary.nodesRemoved) parts.push(`移除 ${summary.nodesRemoved} 个重复场景节点`)
-  const detail =
-    parts.length > 0
-      ? parts.join('；')
-      : '所选操作已应用（若无重复项则计数可能为 0）'
+    lines.push(`材质：已合并 / 省去 ${summary.materialMerged} 份 Material 实例`)
+  if (summary.nodesRemoved) lines.push(`场景节点：已移除 ${summary.nodesRemoved} 个重复节点（含其子树）`)
+  if (!lines.length)
+    lines.push('未产生可计数的合并（可能未勾选分组，或所选组无重复项）；可继续在重复资源窗口中查看。')
 
-  setStatus(`合并完成（仅处理后场景）：${detail}。弹窗已保持打开并刷新列表。`, 'ok')
+  mergeResultLines.value = lines
+  showMergeResultDialog.value = true
+
+  setStatus('重复资源合并已完成，详见结果对话框。', 'ok')
+}
+
+function closeMergeResultDialog() {
+  showMergeResultDialog.value = false
 }
 
 function onOutlineUpdated(payload) {
@@ -411,6 +450,10 @@ function openWorkspaceMenu() {
       >
         3D 最大化
       </button>
+      <label class="toolbar-cb toolbar-cb-wide" title="两侧视口相机目标与朝向同步">
+        <input v-model="linkCamerasLinked" type="checkbox" />
+        联动观察
+      </label>
       <div class="toolbar-vp" title="控制中央双视口是否显示；大纲仍可分别浏览两侧">
         <label class="toolbar-cb"
           ><input v-model="showViewportSource" type="checkbox" /> 显示处理前</label
@@ -713,6 +756,14 @@ function openWorkspaceMenu() {
       @close="closeLightbox"
     />
 
+    <UvEditorWindow
+      v-model:open="uvWindowOpen"
+      :mesh-object="uvWindowMesh"
+      :mesh-label="uvWindowLabel"
+      :read-only="uvWindowReadOnly"
+      @edited="onUvWindowEdited"
+    />
+
     <MemoryEstimateModal
       :open="showMemoryModal"
       :panel="memoryPanel"
@@ -730,6 +781,30 @@ function openWorkspaceMenu() {
       @merge="onDuplicateMerge"
     />
 
+    <div
+      v-if="showMergeResultDialog"
+      class="modal-backdrop merge-result-backdrop"
+      @click.self="closeMergeResultDialog"
+    >
+      <div class="modal-panel merge-result-panel" role="alertdialog" aria-labelledby="merge-result-title" aria-modal="true">
+        <header class="modal-head merge-result-head">
+          <h2 id="merge-result-title">合并结果</h2>
+          <button type="button" class="modal-close" aria-label="关闭" @click="closeMergeResultDialog">×</button>
+        </header>
+        <div class="modal-body merge-result-body">
+          <p class="merge-result-lead">
+            已写入<strong>处理后</strong>场景；<strong>处理前</strong>仍为只读对照，未修改。重复资源窗口保持打开，列表已刷新。
+          </p>
+          <ul class="merge-result-list">
+            <li v-for="(line, idx) in mergeResultLines" :key="idx">{{ line }}</li>
+          </ul>
+        </div>
+        <div class="merge-result-actions">
+          <button type="button" class="tool-btn accent" @click="closeMergeResultDialog">确定</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showLogModal" class="modal-backdrop" @click.self="showLogModal = false">
       <div class="modal-panel log-modal" role="dialog">
         <header class="modal-head">
@@ -745,9 +820,17 @@ function openWorkspaceMenu() {
       </div>
     </div>
 
-    <footer class="statusbar" :class="`st-${statusKind}`" title="双击打开日志" @dblclick="openLogModal">
-      <span class="status-msg">{{ statusText }}</span>
-      <div class="status-right" title="各视口格内左上角为左右独立「存储估」；此处为进程级 JS/GPU 粗估">
+    <footer
+      class="statusbar"
+      :class="`st-${statusKind}`"
+      title="双击打开日志查看完整记录；单行超长已省略"
+      @dblclick="openLogModal"
+    >
+      <span class="status-msg" :title="statusText">{{ statusText }}</span>
+      <div
+        class="status-right"
+        title="各视口格内左上角为左右独立「存储估」；此处为进程级 JS/GPU 粗估。双击状态栏打开日志。"
+      >
         <span class="status-js-line">
           <template v-if="memStats.js">
             JS {{ fmtMemBar(memStats.js.used) }} / {{ fmtMemBar(memStats.js.limit) }}
@@ -820,6 +903,43 @@ function openWorkspaceMenu() {
   justify-content: center;
   padding: 24px;
 }
+.merge-result-backdrop {
+  z-index: 400;
+  background: rgba(0, 0, 0, 0.62);
+}
+.merge-result-body {
+  padding-bottom: 8px;
+}
+.merge-result-lead {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #c5cdd9;
+}
+.merge-result-lead strong {
+  color: #e8c07e;
+}
+.merge-result-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #e2e8f0;
+}
+.merge-result-list li {
+  margin-bottom: 6px;
+}
+.merge-result-list li:last-child {
+  margin-bottom: 0;
+}
+.merge-result-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid #3d4654;
+}
 .modal-panel {
   width: min(480px, 100%);
   max-height: min(90vh, 720px);
@@ -832,6 +952,13 @@ function openWorkspaceMenu() {
 }
 .modal-panel.modal-wide {
   width: min(560px, 100%);
+}
+.modal-panel.merge-result-panel {
+  width: min(460px, 100%);
+  border: 2px solid #4a9f7a;
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(74, 159, 122, 0.4);
 }
 .modal-head {
   flex: 0 0 auto;
@@ -846,6 +973,11 @@ function openWorkspaceMenu() {
   font-size: 14px;
   font-weight: 600;
   color: #d4dce8;
+}
+.modal-head.merge-result-head h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #9fdfb8;
 }
 .modal-close {
   border: none;
@@ -991,6 +1123,10 @@ function openWorkspaceMenu() {
 }
 .toolbar-cb input {
   accent-color: #5a9fd4;
+}
+.toolbar-cb-wide {
+  font-size: 11px;
+  color: #c5cdd9;
 }
 .inline {
   display: flex;
@@ -1179,34 +1315,49 @@ function openWorkspaceMenu() {
 .statusbar {
   flex: 0 0 auto;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  padding: 7px 12px;
+  flex-wrap: nowrap;
+  gap: 10px 12px;
+  padding: 6px 12px;
+  min-height: 32px;
+  max-height: 32px;
+  box-sizing: border-box;
   font-size: 12px;
+  line-height: 1.25;
   border-top: 1px solid #3a3f4a;
   background: linear-gradient(#333842, #2a2f38);
   cursor: pointer;
+  overflow: hidden;
 }
 .status-msg {
-  flex: 1 1 220px;
+  flex: 1 1 0;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .status-right {
-  flex: 1 1 420px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(52vw, 560px);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
-  min-width: 0;
+  justify-content: center;
+  overflow: hidden;
 }
 .status-js-line {
+  display: block;
   font-size: 10px;
+  line-height: 1.25;
   color: #9aa8bc;
   font-variant-numeric: tabular-nums;
   text-align: right;
   max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .st-loading {
   color: #a8d4ff;

@@ -23,22 +23,8 @@ export function applyRendererToneAndPipeline(renderer, pipeline, hdrOn) {
   }
 }
 
-/**
- * @param {import('three').Scene[]} scenes
- * @param {import('three').Object3D | null} sourceRoot
- * @param {import('three').Object3D | null} resultRoot
- * @param {import('three').WebGLRenderer[]} renderers
- * @param {'off' | 'on'} mode
- */
-export function applyViewportShadows(scenes, sourceRoot, resultRoot, renderers, mode) {
-  const on = mode === 'on'
-  for (const r of renderers) {
-    if (!r) continue
-    r.shadowMap.enabled = on
-    r.shadowMap.type = THREE.PCFSoftShadowMap
-  }
-  for (const scene of scenes) {
-    if (!scene) continue
+function applyShadowToSceneLightAndMeshes(scene, root, on) {
+  if (scene) {
     for (const c of scene.children) {
       if (c.isDirectionalLight) {
         c.castShadow = on
@@ -57,6 +43,34 @@ export function applyViewportShadows(scenes, sourceRoot, resultRoot, renderers, 
       }
     }
   }
+  if (root) {
+    root.traverse((obj) => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        obj.castShadow = on
+        obj.receiveShadow = on
+      }
+    })
+  }
+}
+
+/**
+ * @param {import('three').Scene[]} scenes
+ * @param {import('three').Object3D | null} sourceRoot
+ * @param {import('three').Object3D | null} resultRoot
+ * @param {import('three').WebGLRenderer[]} renderers
+ * @param {'off' | 'on'} mode
+ * @deprecated 双视口请用 applyDualViewportShadows
+ */
+export function applyViewportShadows(scenes, sourceRoot, resultRoot, renderers, mode) {
+  const on = mode === 'on'
+  for (const r of renderers) {
+    if (!r) continue
+    r.shadowMap.enabled = on
+    r.shadowMap.type = THREE.PCFSoftShadowMap
+  }
+  for (const scene of scenes) {
+    applyShadowToSceneLightAndMeshes(scene, null, on)
+  }
   for (const root of [sourceRoot, resultRoot]) {
     if (!root) continue
     root.traverse((obj) => {
@@ -66,4 +80,31 @@ export function applyViewportShadows(scenes, sourceRoot, resultRoot, renderers, 
       }
     })
   }
+}
+
+/**
+ * 左右视口独立阴影开关（各自 Scene、Renderer、根节点）。
+ */
+export function applyDualViewportShadows(
+  sceneA,
+  rootA,
+  rendererA,
+  shadowA,
+  sceneB,
+  rootB,
+  rendererB,
+  shadowB,
+) {
+  const onA = shadowA === 'on'
+  const onB = shadowB === 'on'
+  if (rendererA) {
+    rendererA.shadowMap.enabled = onA
+    rendererA.shadowMap.type = THREE.PCFSoftShadowMap
+  }
+  if (rendererB) {
+    rendererB.shadowMap.enabled = onB
+    rendererB.shadowMap.type = THREE.PCFSoftShadowMap
+  }
+  applyShadowToSceneLightAndMeshes(sceneA, rootA, onA)
+  applyShadowToSceneLightAndMeshes(sceneB, rootB, onB)
 }

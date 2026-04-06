@@ -33,13 +33,18 @@
 
 ## 浏览器内行为（当前实现）
 
-- **model-processor 双视口语义**：`处理前` 与 `处理后` 为**两套独立场景图**；加载 GLTF/OBJ 等后，右侧默认由 `cloneSkinned(源)` **自动深度克隆**，与左侧**无运行时引用关系**。**工具、LOD、重复资源合并及属性面板所暗示的可写操作**仅作用于 `处理后`；**处理前**为只读对照（源侧 LOD 固定 100%，不在此侧写网格/材质）。
-- **视口显示**：左右**各自**五类下拉——实体/线框/点云、光照（影棚/柔和/平铺）、贴图（采样 / 无光照 / 隐藏槽）、材质（原始 / 法线 / UV 格）、骨骼（关 / 骨架 / 权重示意色）；由 `applyViewportViewState` + `applySceneLighting` 组合应用。工具栏可对「处理前 / 处理后」视口格子**单独或同时**开关显示；**每格左上角**展示该侧独立的 **存储粗估**（CPU/VRAM 相关字节与 GL 计数摘要）。
-- **状态栏**：保留 JS 堆、**两视口合计** GPU 粗估、峰值与 WebGL 纹理对象数；**左右分侧细粒度存储估**以各视口格内左上角 HUD 为准（避免与状态栏重复）。
+- **model-processor 双视口语义**：`处理前` 与 `处理后` 为**两套独立场景图**；加载 GLTF/OBJ 等后，右侧默认由 `cloneSkinned(源)` **自动深度克隆**。克隆后**再对每个 Mesh 的几何执行 `BufferGeometry.clone()`**（`deepCloneMeshGeometries`），使 LOD 的 `setDrawRange` 与顶点缓冲编辑**不**影响左侧；随后 `isolateResultBranchResources` 再克隆材质与各贴图槽，避免编辑右侧镜像到左侧。**工具、LOD、重复资源合并及属性面板所暗示的可写操作**仅作用于 `处理后`；**处理前**为只读对照（源侧 LOD 固定 100%，不在此侧写网格/材质）。
+- **视口显示**：左右**各自**六类下拉——实体/线框/点云、**顶点属性**（关 / 三角法线 / 各 `geometry.attributes` 名）、光照（影棚/柔和/平铺）、贴图（采样 / 无光照 / 隐藏槽）、材质（原始 / 法线 / UV 格）、骨骼（关 / 骨架 / 权重示意色）；其中**顶点属性**紧接实体类下拉，点云模式下顶点属性着色不生效。选定某属性时，调试材质在顶点着色器把该缓冲的**前三分量**线性映射为 RGB（`position` 用 `fract` 避免大坐标裁切），经 `varying` 在三角形内**平滑插值**到片元。由 `applyViewportViewState` + `applySceneLighting` 组合应用。工具栏可对「处理前 / 处理后」视口格子**单独或同时**开关显示；**每格左上角**展示该侧独立的 **存储粗估**（CPU/VRAM 相关字节与 GL 计数摘要）。
+- **切线计算（属性面板）**：Three `BufferGeometry.computeTangents()` 需要 **index、position、normal、uv**；若缺索引则自动写入**顺序索引**（须为 `BufferAttribute`，Three r174 下 `setIndex(typedArray)` 会把 `geometry.index` 设为裸 TypedArray，渲染绑定读 `index.array.byteLength` 会抛错）；若 UV 全相同/退化则暂用**位置投影**写入可计算的 UV（便于调试，导出前应使用真实展 UV）。计算后对 `tangent` 缓冲做 **NaN / 零长** 清理；仅对 **Standard / Physical / Phong / Lambert / Toon** 等待 **`vertexTangents`** 的材质开启 **`vertexTangents=true` + `needsUpdate`**（勿对 `ShaderMaterial` 写入该字段）；刷新包围球；并通过工作台触发 **丢弃 LOD  WeakMap 缓存后重算 drawRange + 重应用右侧视口显示**，避免加索引后 LOD 与索引语义不一致导致整模不画。属性解析侧对 `resolveOutlineItem` 内存表等做 **try/catch**，避免单项异常导致整面板退化为「未选择」。
+- **UV 视窗**：属性面板 Mesh 区块提供「UV 视窗…」，以浮动层展示 **uv → uv0、uv2 → uv1、uv3 → uv2** 命名下的二维三角拓扑；支持平移视图、滚轮缩放、适配范围；**处理后**可对该通道全体顶点应用 **Δu/Δv** 平移（处理前只读）。底层仍使用 Three 惯例属性名 `uv` / `uv2` / `uv3`，以免材质采样键失效。
+- **顶点属性下拉**：列表过滤掉非合法 GLSL 标识符的属性名；**SkinnedMesh** 使用带骨骼的 `meshbasic_vert` 注入路径，避免沿用 `modelViewMatrix * position` 导致网格被变到视锥外而「消失」。调试 **tangent** 时 **`ShaderMaterial` 不得传入 `vertexTangents`**（非该类型字段，会触发 `setValues` 警告）；须在 **`defines` 中设 `USE_TANGENT`**，以便 Three 顶点前缀注入 `attribute vec4 tangent`，否则片元前顶点阶段引用 `tangent` 会编译失败。
+- **状态栏**：**固定单行高度**（约 32px）；左侧为当前状态文案、右侧为 JS 堆与合计 GPU 等；超出宽度用省略号截断，**完整历史以双击打开日志**为准（悬停左侧可看到本条完整 `statusText`）。
 - **属性面板（model-processor）**：大纲当前焦点为「处理前」时，面板顶部展示**只读**高对比提示；焦点为「处理后」时展示**可编辑**提示，避免用户对错误一侧产生可写预期。
-- **渲染与后期（model-processor 双视口）**：**每个 3D 格内**有一行「渲染与效果」（与对侧绑定同一套 reactive 状态，改一侧即双方生效）：**管线**（固定流水线 / PBR / 光追占位）、**阴影**、**HDR**（ACES）、**SSAO**（`EffectComposer` + `SSAOPass`）。`onResize` 时同步 `renderer.setPixelRatio`、`EffectComposer.setPixelRatio` + `setSize`，并对各 **canvas 外包一层** 挂 `ResizeObserver`，避免仅 flex/最大化导致尺寸变化而 **window 未触发 resize** 时后期分辨率错位。载入新网格后按当前阴影选项刷新投射体。
+- **渲染与后期（model-processor 双视口）**：**每个 3D 格内**各自一行「渲染与效果」，**左右 `renderSettingsSource` / `renderSettingsResult` 互不联动**：**管线**（固定流水线 / PBR / 光追占位）、**阴影**、**HDR**（ACES）、**SSAO**（`EffectComposer` + `SSAOPass`）。`onResize` 时同步 `renderer.setPixelRatio`、`EffectComposer.setPixelRatio` + `setSize`，并对各 **canvas 外包一层** 挂 `ResizeObserver`，避免仅 flex/最大化导致尺寸变化而 **window 未触发 resize** 时后期分辨率错位。载入新网格后按当前阴影选项刷新投射体。
 - **打开模型流程**：载入入口在 **卸载当前处理前/处理后场景**、广播**空大纲**之后，再叠加**居中进度条**（glTF 走 `LoadingManager.onProgress`；OBJ 多文件同理用独立 `LoadingManager`）；结束或失败后关闭遮罩并再次触发尺寸对齐。
 - **3D 最大化**：工作台工具栏切换「3D 最大化」时隐藏左/右侧 Dock，中央区域独占横向空间；若双视口均可见则两格**横向等分**，若仅一侧可见则该格在纵向上铺满可用高度。
+- **联动观察**：仅**相机**可选同步（`linkCameras` 在工作台工具栏）；与「渲染与效果」、显示类下拉无关。
+- **视口角落统计**：各 3D 格左上角除存储粗估外，展示该侧场景的 **三角面 / 顶点 / Mesh / 唯一材质数 / 唯一贴图槽实例数**（与 WebGL `info.memory` 几何/纹理计数分列）。
 - 支持 glTF 2.0 / GLB；URL 与本地文件（含 `.gltf + .bin + 贴图` 多文件映射）；查询参数 `?url=` 初始加载。
 - Maya 风格 UI：主菜单、视口菜单、Outliner panel 菜单、右侧 Attribute Editor dock。
 - Panel 数量映射：
@@ -75,7 +80,8 @@
 - **重复资源共享（model-processor / 工作台）**：
   - **范围**：弹窗**仅**分析与合并「**处理后**」场景；不提供「处理前 / 处理后」选项卡；「处理前」仅在大纲与双视口对照。
   - **资源引用关系图**：弹窗内提供基于 SVG 的四列图（场景节点 → Mesh → 材质 → 贴图），边表示父子层次、Mesh→材质、材质→贴图槽（槽位列表同 `MATERIAL_MAP_KEYS`）；多对多引用以多重边展示；画布区域可滚动以适配大场景。
-  - **合并后行为**：合并**仅修改 `resultRoot`**；执行合并后不关闭弹窗并刷新「处理后」分析；`applyDuplicateMerges` 返回计数；通过 `sceneRevision` 刷新弹窗分析/关系图。
+  - **合并后行为**：合并**仅修改 `resultRoot`**；执行合并后不关闭弹窗并刷新「处理后」分析；`applyDuplicateMerges` 返回计数；通过 `sceneRevision` 刷新弹窗分析/关系图。工作台另起**高 z-index 结果对话框**（绿色强调边框）汇总贴图/材质/节点合并条数，与状态栏短提示并存。
+  - **共享资源与 dispose**：`cloneSkinned(源)` 后「处理前 / 处理后」仍可能**共享同一 Texture / Material 对象**。合并贴图/材质后对「移除」实例调用 `dispose()` 时，须检测 **「处理前」根**是否仍引用该对象；若仍引用则**跳过 dispose**，避免左侧对照场景显存估算骤降或贴图失效。
   - 贴图分组：按「内容身份键」分桶（有 `HTMLImageElement.src` 时用 **`FILE:`+规范化 URL**，避免 Wavefront **MTL 多 `newmtl` 共用同一 `map_Kd`** 时，因解码前后 `PIX`/`SRC`/宽高变化而拆桶）；桶内可产生**多个**可合并子簇；属性面板「贴图哈希」（含采样摘要）**不要求逐字相同**，请以弹窗内贴图分组为准。
   - **「无重复」含义**：场景中可有 N 张互不相同贴图、M 份互不相同材质，此时**不会**出现任何可合并分组；弹窗空状态会带出 `sceneResourceCounts`（唯一贴图/材质数量）以免与「没加载」混淆。
   - 场景节点分组：与属性面板 **Object3D「哈希值」** 使用同一规则（Mesh 为几何公差指纹 + 材质内容键；非 Mesh 为类型/可见性/layers/frustumCulled/renderOrder/本地矩阵）；**不少于 2 个节点同哈希** 才出现在「场景节点」列表；合并会 `remove` 多余节点及其子树。

@@ -317,12 +317,40 @@ export function analyzeDuplicateResources(root) {
   }
 }
 
+function textureReferencedByRoot(r, tex) {
+  let found = false
+  r?.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const m of mats) {
+      if (!m) continue
+      for (const k of MATERIAL_MAP_KEYS) {
+        if (m[k] === tex) found = true
+      }
+    }
+  })
+  return found
+}
+
+function materialReferencedByRoot(r, mat) {
+  let found = false
+  r?.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const m of mats) {
+      if (m === mat) found = true
+    }
+  })
+  return found
+}
+
 /**
  * @param {import('three').Object3D} root
  * @param {import('three').Texture[]} textures
  * @param {string} keepUuid
+ * @param {import('three').Object3D[]} [otherRoots] 例如「处理前」场景：深度克隆后仍可能与「处理后」共享贴图对象，禁对此根仍引用者 dispose，避免误伤对照侧
  */
-export function mergeTextureGroup(root, textures, keepUuid) {
+export function mergeTextureGroup(root, textures, keepUuid, otherRoots = []) {
   const keep = textures.find((t) => t.uuid === keepUuid) || textures[0]
   const remove = textures.filter((t) => t.uuid !== keep.uuid)
   if (!remove.length) return { merged: 0 }
@@ -344,7 +372,10 @@ export function mergeTextureGroup(root, textures, keepUuid) {
     }
   })
 
+  const preserve = Array.isArray(otherRoots) ? otherRoots.filter(Boolean) : []
   for (const t of remove) {
+    const stillUsedElsewhere = preserve.some((r) => textureReferencedByRoot(r, t))
+    if (stillUsedElsewhere) continue
     try {
       t.dispose()
     } catch {
@@ -358,8 +389,9 @@ export function mergeTextureGroup(root, textures, keepUuid) {
  * @param {import('three').Object3D} root
  * @param {import('three').Material[]} materials
  * @param {string} keepUuid
+ * @param {import('three').Object3D[]} [otherRoots] 同上，避免共享 Material 时在另一侧仍使用却被 dispose
  */
-export function mergeMaterialGroup(root, materials, keepUuid) {
+export function mergeMaterialGroup(root, materials, keepUuid, otherRoots = []) {
   const keep = materials.find((m) => m.uuid === keepUuid) || materials[0]
   const remove = materials.filter((m) => m.uuid !== keep.uuid)
   if (!remove.length) return { merged: 0 }
@@ -379,7 +411,10 @@ export function mergeMaterialGroup(root, materials, keepUuid) {
     if (changed) obj.material = Array.isArray(obj.material) ? next : next[0]
   })
 
+  const preserve = Array.isArray(otherRoots) ? otherRoots.filter(Boolean) : []
   for (const m of remove) {
+    const stillUsedElsewhere = preserve.some((r) => materialReferencedByRoot(r, m))
+    if (stillUsedElsewhere) continue
     try {
       m.dispose()
     } catch {
