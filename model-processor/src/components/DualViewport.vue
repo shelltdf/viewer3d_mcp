@@ -14,6 +14,8 @@ import { findObject3DByUuid, findMaterialByUuid, findTextureByUuid } from '../ut
 import { attachCompressedTextureHandlers } from '../utils/attachTextureHandlers.js'
 import { estimateSceneMemory } from '../utils/memoryEstimate.js'
 import { aggregateMeshInfoUnderNode } from '../utils/meshAggregate.js'
+import { collectUniqueTexturesForScene } from '../utils/collectSceneTextures.js'
+import { getMeshMaterialsMemoryTable } from '../utils/meshMaterialInfo.js'
 
 const emit = defineEmits(['source-loaded', 'result-updated', 'viewer-error', 'status'])
 
@@ -21,6 +23,17 @@ const lodSource = ref(1)
 const lodResult = ref(1)
 const statsSource = ref({ meshes: 0, triangles: 0, vertices: 0 })
 const statsResult = ref({ meshes: 0, triangles: 0, vertices: 0 })
+
+const linkCameras = ref(true)
+const viewHudSource = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
+const viewHudResult = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
+
+function fmtBytes(n) {
+  if (n == null || Number.isNaN(n)) return '—'
+  if (n < 1024) return `${Math.round(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
 
 /** @type {import('three').AnimationClip[]} */
 let sourceClips = []
@@ -312,7 +325,11 @@ function resolveOutlineItem(panel, item) {
     const object = findObject3DByUuid(root, item.refId)
     if (!object) return { kind: 'empty' }
     const meshInfo = aggregateMeshInfoUnderNode(object)
-    return { kind: 'object3d', object, meshInfo }
+    let meshMaterialInfo = null
+    if (object.isMesh || object.isSkinnedMesh) {
+      meshMaterialInfo = getMeshMaterialsMemoryTable(object)
+    }
+    return { kind: 'object3d', object, meshInfo, meshMaterialInfo }
   }
   if (item.refType === 'material') {
     const material = findMaterialByUuid(root, item.refId)
@@ -439,6 +456,26 @@ async function loadFiles(fileList) {
   }
 }
 
+function refreshViewHud(root, renderer, targetRef) {
+  if (!root) {
+    targetRef.value = { cpu: 0, vram: 0, geo: 0, tex: 0 }
+    return
+  }
+  const est = estimateSceneMemory(root)
+  const geo = est.breakdown.find((b) => b.id === 'geo')?.bytes || 0
+  const tex = est.breakdown.find((b) => b.id === 'tex')?.bytes || 0
+  const vramEst = geo + tex
+  const info = renderer?.info?.memory
+  targetRef.value = {
+    cpu: est.total,
+    vram: vramEst,
+    geo,
+    tex,
+    geometries: info?.geometries ?? 0,
+    textures: info?.textures ?? 0,
+  }
+}
+
 function animate() {
   animationId = requestAnimationFrame(animate)
   const delta = clock.getDelta()
@@ -448,6 +485,8 @@ function animate() {
   controlsB?.update()
   if (sourceRoot) statsSource.value = computeMeshStats(sourceRoot)
   if (resultRoot) statsResult.value = computeMeshStats(resultRoot)
+  refreshViewHud(sourceRoot, rendererA, viewHudSource)
+  refreshViewHud(resultRoot, rendererB, viewHudResult)
   if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
   if (rendererB && sceneB && cameraB) rendererB.render(sceneB, cameraB)
 }
@@ -515,6 +554,28 @@ function mount() {
   gltfLoader = new GLTFLoader(sharedLoadingManager)
   gltfLoader.setDRACOLoader(dracoLoader)
 
+  let cameraSyncing = false
+  function syncCamBFromA() {
+    if (!linkCameras.value || cameraSyncing || !cameraA || !cameraB) return
+    cameraSyncing = true
+    cameraB.position.copy(cameraA.position)
+    cameraB.quaternion.copy(cameraA.quaternion)
+    controlsB.target.copy(controlsA.target)
+    controlsB.update()
+    cameraSyncing = false
+  }
+  function syncCamAFromB() {
+    if (!linkCameras.value || cameraSyncing || !cameraA || !cameraB) return
+    cameraSyncing = true
+    cameraA.position.copy(cameraB.position)
+    cameraA.quaternion.copy(cameraB.quaternion)
+    controlsA.target.copy(controlsB.target)
+    controlsA.update()
+    cameraSyncing = false
+  }
+  controlsA.addEventListener('change', syncCamBFromA)
+  controlsB.addEventListener('change', syncCamAFromB)
+
   window.addEventListener('resize', onResize)
   onResize()
   animate()
@@ -551,7 +612,9 @@ watch([sourceEl, resultEl], async () => {
 
 function getMemoryEstimate(which) {
   const root = which === 'source' ? sourceRoot : resultRoot
-  return estimateSceneMemory(root)
+  const est = estimateSceneMemory(root)
+  const textureMosaic = collectUniqueTexturesForScene(root)
+  return { ...est, textureMosaic }
 }
 
 defineExpose({
@@ -561,6 +624,7 @@ defineExpose({
   clearResult,
   resolveOutlineItem,
   getMemoryEstimate,
+  linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)
     if (resultRoot) fitCameraToObject(cameraB, controlsB, resultRoot)
@@ -579,6 +643,19 @@ defineExpose({
             三角面 {{ statsSource.triangles.toLocaleString() }} · 顶点 {{ statsSource.vertices.toLocaleString() }} · Mesh
             {{ statsSource.meshes }}
           </div>
+          <label class="hud-link">
+            <input v-model="linkCameras" type="checkbox" />
+            联动观察
+          </label>
+          <div class="hud-mem">
+            内存≈{{ fmtBytes(viewHudSource.cpu) }} · 显存估≈{{ fmtBytes(viewHudSource.vram) }}
+            <span class="hud-mem-sub">
+              （几何 {{ fmtBytes(viewHudSource.geo) }} · 贴图 {{ fmtBytes(viewHudSource.tex) }}）
+            </span>
+          </div>
+          <div class="hud-mem-mini">
+            WebGL：几何 {{ viewHudSource.geometries }} · 纹理对象 {{ viewHudSource.textures }}
+          </div>
           <label class="hud-lod">
             <span>LOD</span>
             <input v-model.number="lodSource" type="range" min="0.02" max="1" step="0.02" />
@@ -595,6 +672,19 @@ defineExpose({
           <div class="hud-stats">
             三角面 {{ statsResult.triangles.toLocaleString() }} · 顶点 {{ statsResult.vertices.toLocaleString() }} · Mesh
             {{ statsResult.meshes }}
+          </div>
+          <label class="hud-link">
+            <input v-model="linkCameras" type="checkbox" />
+            联动观察
+          </label>
+          <div class="hud-mem">
+            内存≈{{ fmtBytes(viewHudResult.cpu) }} · 显存估≈{{ fmtBytes(viewHudResult.vram) }}
+            <span class="hud-mem-sub">
+              （几何 {{ fmtBytes(viewHudResult.geo) }} · 贴图 {{ fmtBytes(viewHudResult.tex) }}）
+            </span>
+          </div>
+          <div class="hud-mem-mini">
+            WebGL：几何 {{ viewHudResult.geometries }} · 纹理对象 {{ viewHudResult.textures }}
           </div>
           <label class="hud-lod">
             <span>LOD</span>
@@ -664,8 +754,36 @@ defineExpose({
   z-index: 2;
 }
 .hud-stats {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.hud-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 10px;
+  color: #b8c8e0;
+  cursor: pointer;
+}
+.hud-mem {
+  flex: 1 1 100%;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #9fdfb8;
+  font-variant-numeric: tabular-nums;
+}
+.hud-mem-sub {
+  color: #8e97a6;
+  font-size: 9px;
+}
+.hud-mem-mini {
+  flex: 1 1 100%;
+  font-size: 9px;
+  color: #6b7a8e;
   font-variant-numeric: tabular-nums;
 }
 .hud-lod {

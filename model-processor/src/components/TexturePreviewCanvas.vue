@@ -5,13 +5,49 @@ import * as THREE from 'three'
 const props = defineProps({
   texture: { type: Object, default: null },
   size: { type: Number, default: 160 },
+  /** rgba | r | g | b | a */
+  channel: { type: String, default: 'rgba' },
 })
 
 const canvasRef = ref(null)
 let renderer
 let scene
 let camera
-let raf = 0
+let mesh
+let material
+
+const VS = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`
+
+const FS = `
+uniform sampler2D map;
+uniform float uMode;
+varying vec2 vUv;
+void main() {
+  vec4 c = texture2D(map, vUv);
+  if (uMode < 0.5) {
+    gl_FragColor = vec4(c.rgb, 1.0);
+  } else if (uMode < 1.5) {
+    gl_FragColor = vec4(c.rrr, 1.0);
+  } else if (uMode < 2.5) {
+    gl_FragColor = vec4(c.ggg, 1.0);
+  } else if (uMode < 3.5) {
+    gl_FragColor = vec4(c.bbb, 1.0);
+  } else {
+    gl_FragColor = vec4(vec3(c.a), 1.0);
+  }
+}
+`
+
+function modeFromChannel(ch) {
+  const m = { rgba: 0, r: 1, g: 2, b: 3, a: 4 }
+  return m[ch] ?? 0
+}
 
 function clearScene() {
   if (!scene) return
@@ -19,11 +55,10 @@ function clearScene() {
     const o = scene.children[0]
     scene.remove(o)
     if (o.geometry) o.geometry.dispose()
-    if (o.material) {
-      if (o.material.map) o.material.map = null
-      o.material.dispose()
-    }
+    if (o.material) o.material.dispose()
   }
+  mesh = undefined
+  material = undefined
 }
 
 function renderOnce() {
@@ -47,8 +82,15 @@ function build() {
   }
 
   clearScene()
-  const mat = new THREE.MeshBasicMaterial({ map: props.texture })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat)
+  material = new THREE.ShaderMaterial({
+    uniforms: {
+      map: { value: props.texture },
+      uMode: { value: modeFromChannel(props.channel) },
+    },
+    vertexShader: VS,
+    fragmentShader: FS,
+  })
+  mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material)
   scene.add(mesh)
 
   const s = props.size
@@ -56,14 +98,15 @@ function build() {
   renderOnce()
 }
 
-function loop() {
-  raf = requestAnimationFrame(loop)
+function updateUniforms() {
+  if (!material?.uniforms) return
+  material.uniforms.map.value = props.texture
+  material.uniforms.uMode.value = modeFromChannel(props.channel)
   renderOnce()
 }
 
 onMounted(() => {
   build()
-  loop()
 })
 
 watch(
@@ -71,8 +114,12 @@ watch(
   () => build(),
 )
 
+watch(
+  () => props.channel,
+  () => updateUniforms(),
+)
+
 onBeforeUnmount(() => {
-  cancelAnimationFrame(raf)
   clearScene()
   renderer?.dispose()
   renderer = undefined

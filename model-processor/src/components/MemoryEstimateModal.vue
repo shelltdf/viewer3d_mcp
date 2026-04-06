@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import TexturePreviewCanvas from './TexturePreviewCanvas.vue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -27,6 +28,8 @@ const bars = computed(() => {
     pct: Math.min(100, Math.round((x.bytes / t) * 1000) / 10),
   }))
 })
+
+const mosaic = computed(() => data.value?.textureMosaic || [])
 
 function fmtBytes(n) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -78,6 +81,18 @@ function fmtBytes(n) {
             </div>
           </div>
           <p class="mem-note">{{ data.note }}</p>
+
+          <h3 class="mem-subh">贴图拼图（唯一贴图）</h3>
+          <p v-if="!mosaic.length" class="mem-mosaic-empty">无贴图或无法收集。</p>
+          <div v-else class="mem-mosaic">
+            <div v-for="item in mosaic" :key="item.uuid" class="mosaic-cell" :title="item.label">
+              <TexturePreviewCanvas v-if="item.texture" :texture="item.texture" :size="56" />
+              <div class="mosaic-meta">
+                <span class="mosaic-bytes">{{ fmtBytes(item.bytes) }}</span>
+                <span class="mosaic-lbl">{{ item.slot || 'map' }}</span>
+              </div>
+            </div>
+          </div>
         </div>
         <div v-else class="mem-empty">当前侧无模型或无法估算。</div>
       </div>
@@ -102,8 +117,8 @@ function fmtBytes(n) {
 .mem-panel {
   position: relative;
   z-index: 1;
-  width: min(520px, 94vw);
-  max-height: min(88vh, 640px);
+  width: min(640px, 96vw);
+  max-height: min(88vh, 720px);
   overflow: auto;
   background: linear-gradient(#2c3138, #252a32);
   border: 1px solid #4a5568;
@@ -208,5 +223,46 @@ function fmtBytes(n) {
   font-size: 12px;
   color: #8e97a6;
   text-align: center;
+}
+.mem-subh {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #9fb3d6;
+}
+.mem-mosaic-empty {
+  margin: 0;
+  font-size: 11px;
+  color: #7a8494;
+}
+.mem-mosaic {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.mosaic-cell {
+  border: 1px solid #3a4558;
+  border-radius: 4px;
+  padding: 4px;
+  background: #1a1d24;
+}
+.mosaic-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 9px;
+  color: #8e97a6;
+  word-break: break-all;
+}
+.mosaic-bytes {
+  color: #9fdfb8;
+  font-variant-numeric: tabular-nums;
+}
+.mosaic-lbl {
+  color: #6b7a8e;
 }
 </style>

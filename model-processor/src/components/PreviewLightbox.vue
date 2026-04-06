@@ -8,6 +8,8 @@ const props = defineProps({
   kind: { type: String, default: '' },
   texture: { type: Object, default: null },
   material: { type: Object, default: null },
+  /** rgba | r | g | b | a */
+  channel: { type: String, default: 'rgba' },
 })
 
 const emit = defineEmits(['close'])
@@ -35,7 +37,12 @@ function onKey(e) {
           <button type="button" class="lightbox-x" @click="emit('close')">×</button>
         </header>
         <div class="lightbox-body">
-          <TexturePreviewCanvas v-if="kind === 'texture' && texture" :texture="texture" :size="720" />
+          <TexturePreviewCanvas
+            v-if="kind === 'texture' && texture"
+            :texture="texture"
+            :size="720"
+            :channel="channel"
+          />
           <MaterialPreviewBall v-else-if="kind === 'material' && material" :material="material" :size="720" />
         </div>
         <p class="lightbox-hint">按 Esc 或点击背景关闭 · 双击属性区可再次打开</p>

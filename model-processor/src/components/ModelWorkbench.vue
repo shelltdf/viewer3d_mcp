@@ -24,9 +24,8 @@ const focusPanel = ref('source')
 const selectedSourceUuid = ref(null)
 const selectedResultUuid = ref(null)
 
-const showProcessModal = ref(false)
-const showBakeModal = ref(false)
-const showToolsModal = ref(false)
+/** 独立小弹窗：proc-* / bake-* / tool-* */
+const activeDialog = ref('')
 const showWorkspaceModal = ref(false)
 const showLogModal = ref(false)
 const showMemoryModal = ref(false)
@@ -36,6 +35,25 @@ const lightboxOpen = ref(false)
 const lightboxKind = ref('')
 const lightboxTexture = ref(null)
 const lightboxMaterial = ref(null)
+const lightboxChannel = ref('rgba')
+
+const DIALOG_TITLES = {
+  'proc-preview': '预览处理结果',
+  'proc-mesh': '网格简化',
+  'proc-skeleton': '骨骼 / 权重简化',
+  'proc-atlas': '材质贴图合并',
+  'proc-pbr': '单贴图 → PBR',
+  'bake-light': '灯光烘焙',
+  'bake-tex': '烘焙到贴图',
+  'bake-vertex': '烘焙到顶点属性',
+  'tool-tiles': '切割瓦片',
+  'tool-mesh2pc': 'Mesh → 点云',
+  'tool-pc': '点云处理',
+  'tool-pc2mesh': '点云 → Mesh',
+  'tool-gaussian': 'Mesh → 高斯泼溅',
+}
+
+const dialogTitle = computed(() => DIALOG_TITLES[activeDialog.value] || '')
 
 const { lines: logLines, push: logPush, formatAll: formatLogAll } = useActivityLog()
 
@@ -133,7 +151,16 @@ function onPreviewLightbox(payload) {
   lightboxKind.value = payload.kind
   lightboxTexture.value = payload.texture || null
   lightboxMaterial.value = payload.material || null
+  lightboxChannel.value = payload.channel || 'rgba'
   lightboxOpen.value = true
+}
+
+function onInspectorAction(e) {
+  if (e?.type === 'texture-compress') {
+    setStatus('压缩贴图：占位（需接入压缩管线或后端）', 'ok')
+  } else if (e?.type === 'texture-decompress') {
+    setStatus('解压贴图：占位（需接入解压管线）', 'ok')
+  }
 }
 
 function closeLightbox() {
@@ -262,9 +289,35 @@ function openWorkspaceMenu() {
           <button class="menu-item" type="button" @click="runPlaceholder('导出 glTF')">导出 glTF…</button>
         </div>
       </div>
-      <button class="menu-btn menu-top" type="button" @click="showProcessModal = true">处理</button>
-      <button class="menu-btn menu-top" type="button" @click="showBakeModal = true">烘焙</button>
-      <button class="menu-btn menu-top" type="button" @click="showToolsModal = true">工具</button>
+      <div class="menu-root">
+        <button class="menu-btn menu-top" type="button">处理</button>
+        <div class="menu-pop menu-pop-wide">
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-preview'">预览处理结果…</button>
+          <div class="menu-sep" />
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'">网格简化…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'">骨骼 / 权重简化…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'">材质贴图合并…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'proc-pbr'">单贴图 → PBR…</button>
+        </div>
+      </div>
+      <div class="menu-root">
+        <button class="menu-btn menu-top" type="button">烘焙</button>
+        <div class="menu-pop menu-pop-wide">
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-light'">灯光烘焙…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-tex'">烘焙到贴图…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'bake-vertex'">烘焙到顶点…</button>
+        </div>
+      </div>
+      <div class="menu-root">
+        <button class="menu-btn menu-top" type="button">工具</button>
+        <div class="menu-pop menu-pop-wide">
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-tiles'">切割瓦片…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-mesh2pc'">Mesh → 点云…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc'">点云处理…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-pc2mesh'">点云 → Mesh…</button>
+          <button class="menu-item" type="button" @click="activeDialog = 'tool-gaussian'">Mesh → 高斯泼溅…</button>
+        </div>
+      </div>
       <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu">本地工作目录</button>
       <button class="menu-btn menu-top" type="button" @click="showMemoryModal = true">内存预览</button>
       <div class="menu-root">
@@ -339,31 +392,45 @@ function openWorkspaceMenu() {
           </button>
         </div>
         <div v-show="!dockCollapsed" class="dock-body">
-          <PropertyInspector :payload="inspectorPayload" @open-lightbox="onPreviewLightbox" />
+          <PropertyInspector
+            :payload="inspectorPayload"
+            @open-lightbox="onPreviewLightbox"
+            @action="onInspectorAction"
+          />
         </div>
       </aside>
     </div>
 
-    <!-- 处理 -->
-    <div v-if="showProcessModal" class="modal-backdrop" @click.self="showProcessModal = false">
-      <div class="modal-panel" role="dialog" aria-labelledby="dlg-process-title">
+    <!-- 处理 / 烘焙 / 工具：每项独立弹窗 -->
+    <div v-if="activeDialog" class="modal-backdrop" @click.self="activeDialog = ''">
+      <div class="modal-panel" role="dialog" :aria-labelledby="'dlg-' + activeDialog">
         <header class="modal-head">
-          <h2 id="dlg-process-title">处理</h2>
-          <button type="button" class="modal-close" @click="showProcessModal = false">×</button>
+          <h2 :id="'dlg-' + activeDialog">{{ dialogTitle }}</h2>
+          <button type="button" class="modal-close" @click="activeDialog = ''">×</button>
         </header>
         <div class="modal-body">
-          <p class="modal-hint">以下为管线占位参数，可接入 WASM / 后端后生效。</p>
-          <div class="btn-row">
-            <button type="button" class="tool-btn accent" @click="previewOptimize(); showProcessModal = false">预览处理结果</button>
-          </div>
-          <section class="sec">
-            <h3 class="sec-title">网格 / 骨骼简化</h3>
+          <template v-if="activeDialog === 'proc-preview'">
+            <p class="modal-hint">生成右侧「处理后」预览（克隆源网格）。以下为管线占位。</p>
+            <div class="btn-row">
+              <button type="button" class="tool-btn accent" @click="previewOptimize(); activeDialog = ''">执行预览</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'proc-mesh'">
+            <p class="modal-hint">网格简化参数（占位，可接入 WASM / 后端）。</p>
             <label class="field">
               <span>目标三角面比例</span>
               <input v-model.number="meshTargetRatio" type="range" min="0.05" max="1" step="0.05" />
               <span class="mono">{{ meshTargetRatio.toFixed(2) }}</span>
             </label>
             <label class="check"><input v-model="meshPreserveBorder" type="checkbox" /> 保护边界</label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('网格简化'); activeDialog = ''">运行网格简化</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'proc-skeleton'">
+            <p class="modal-hint">骨骼与权重简化（占位）。</p>
             <label class="field">
               <span>最大骨骼数</span>
               <input v-model.number="maxBones" class="num" type="number" min="1" max="512" />
@@ -372,40 +439,29 @@ function openWorkspaceMenu() {
               <span>每顶点最大影响数</span>
               <input v-model.number="maxInfluences" class="num" type="number" min="1" max="8" />
             </label>
-          </section>
-          <section class="sec">
-            <h3 class="sec-title">材质 / 贴图</h3>
-            <label class="check"><input v-model="mergeTextures" type="checkbox" /> 合并材质贴图（Atlas）</label>
-            <label class="check"><input v-model="pbrFromSingle" type="checkbox" /> 单张贴图推测 PBR（占位）</label>
-          </section>
-          <div class="btn-row">
-            <button type="button" class="tool-btn" @click="runPlaceholder('网格简化')">网格简化</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('骨骼简化')">骨骼 / 权重简化</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('贴图合并')">材质贴图合并</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('PBR 生成')">单贴图 → PBR</button>
-          </div>
-        </div>
-      </div>
-    </div>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('骨骼简化'); activeDialog = ''">运行骨骼 / 权重简化</button>
+            </div>
+          </template>
 
-    <!-- 烘焙 -->
-    <div v-if="showBakeModal" class="modal-backdrop" @click.self="showBakeModal = false">
-      <div class="modal-panel" role="dialog" aria-labelledby="dlg-bake-title">
-        <header class="modal-head">
-          <h2 id="dlg-bake-title">烘焙</h2>
-          <button type="button" class="modal-close" @click="showBakeModal = false">×</button>
-        </header>
-        <div class="modal-body">
-          <section class="sec">
-            <h3 class="sec-title">烘焙参数</h3>
-            <label class="field">
-              <span>模式</span>
-              <select v-model="bakeMode" class="sel">
-                <option value="light">灯光烘焙</option>
-                <option value="texture">烘焙到贴图</option>
-                <option value="vertex">烘焙到顶点</option>
-              </select>
-            </label>
+          <template v-else-if="activeDialog === 'proc-atlas'">
+            <p class="modal-hint">合并材质贴图为 Atlas（占位）。</p>
+            <label class="check"><input v-model="mergeTextures" type="checkbox" /> 合并材质贴图（Atlas）</label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('贴图合并'); activeDialog = ''">运行合并</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'proc-pbr'">
+            <p class="modal-hint">由单张贴图推测 PBR 通道（占位）。</p>
+            <label class="check"><input v-model="pbrFromSingle" type="checkbox" /> 单张贴图推测 PBR</label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('PBR 生成'); activeDialog = ''">运行 PBR 生成</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'bake-light'">
+            <p class="modal-hint">灯光烘焙（占位）。</p>
             <label class="field">
               <span>贴图分辨率</span>
               <input v-model.number="bakeResolution" class="num" type="number" step="256" min="256" max="8192" />
@@ -414,30 +470,39 @@ function openWorkspaceMenu() {
               <span>灯光采样</span>
               <input v-model.number="lightBakeSamples" class="num" type="number" min="1" max="4096" />
             </label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('灯光烘焙'); activeDialog = ''">开始灯光烘焙</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'bake-tex'">
+            <p class="modal-hint">烘焙到贴图（占位）。</p>
+            <label class="field">
+              <span>贴图分辨率</span>
+              <input v-model.number="bakeResolution" class="num" type="number" step="256" min="256" max="8192" />
+            </label>
+            <label class="field">
+              <span>灯光采样</span>
+              <input v-model.number="lightBakeSamples" class="num" type="number" min="1" max="4096" />
+            </label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到贴图'); activeDialog = ''">烘焙到贴图</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'bake-vertex'">
+            <p class="modal-hint">烘焙到顶点属性（占位）。</p>
             <label class="field">
               <span>顶点通道</span>
               <input v-model="vertexBakeChannels" class="txt" type="text" placeholder="color, ao, …" />
             </label>
-          </section>
-          <div class="btn-row">
-            <button type="button" class="tool-btn" @click="runPlaceholder('灯光烘焙')">灯光烘焙</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到贴图')">烘焙到贴图</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到顶点')">烘焙到顶点属性</button>
-          </div>
-        </div>
-      </div>
-    </div>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到顶点'); activeDialog = ''">烘焙到顶点</button>
+            </div>
+          </template>
 
-    <!-- 工具 -->
-    <div v-if="showToolsModal" class="modal-backdrop" @click.self="showToolsModal = false">
-      <div class="modal-panel" role="dialog" aria-labelledby="dlg-tools-title">
-        <header class="modal-head">
-          <h2 id="dlg-tools-title">工具</h2>
-          <button type="button" class="modal-close" @click="showToolsModal = false">×</button>
-        </header>
-        <div class="modal-body">
-          <section class="sec">
-            <h3 class="sec-title">瓦片 / 点云 / 高斯</h3>
+          <template v-else-if="activeDialog === 'tool-tiles'">
+            <p class="modal-hint">切割瓦片（占位）。</p>
             <label class="field">
               <span>瓦片尺寸</span>
               <input v-model.number="tileSize" class="num" type="number" min="0.1" step="0.1" />
@@ -446,6 +511,13 @@ function openWorkspaceMenu() {
               <span>瓦片重叠</span>
               <input v-model.number="tileOverlap" class="num" type="number" min="0" step="0.01" />
             </label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('切割瓦片'); activeDialog = ''">运行切割</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'tool-mesh2pc'">
+            <p class="modal-hint">Mesh → 点云（占位）。</p>
             <label class="field">
               <span>点云密度</span>
               <select v-model="pcDensity" class="sel">
@@ -455,29 +527,55 @@ function openWorkspaceMenu() {
               </select>
             </label>
             <label class="check"><input v-model="pcNoiseRemove" type="checkbox" /> 点云去噪</label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('Mesh → 点云'); activeDialog = ''">转换</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'tool-pc'">
+            <p class="modal-hint">点云处理（占位）。</p>
             <label class="field">
-              <span>点云 → Mesh</span>
+              <span>点云密度</span>
+              <select v-model="pcDensity" class="sel">
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            </label>
+            <label class="check"><input v-model="pcNoiseRemove" type="checkbox" /> 点云去噪</label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('点云处理'); activeDialog = ''">处理</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'tool-pc2mesh'">
+            <p class="modal-hint">点云 → Mesh（占位）。</p>
+            <label class="field">
+              <span>重建方法</span>
               <select v-model="meshFromPcMethod" class="sel">
                 <option value="poisson">Poisson</option>
                 <option value="ball_pivot">Ball pivot</option>
                 <option value="alpha_shape">Alpha shape</option>
               </select>
             </label>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('点云 → Mesh'); activeDialog = ''">重建</button>
+            </div>
+          </template>
+
+          <template v-else-if="activeDialog === 'tool-gaussian'">
+            <p class="modal-hint">Mesh → 高斯泼溅（占位）。</p>
             <label class="field">
-              <span>高斯泼溅</span>
+              <span>模式</span>
               <select v-model="gaussianMode" class="sel">
                 <option value="colmap-style">COLMAP 风格（占位）</option>
                 <option value="instant-ngp">Instant-NGP 风格（占位）</option>
               </select>
             </label>
-          </section>
-          <div class="btn-row">
-            <button type="button" class="tool-btn" @click="runPlaceholder('切割瓦片')">切割瓦片</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('Mesh → 点云')">Mesh → 点云</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('点云处理')">点云处理</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('点云 → Mesh')">点云 → Mesh</button>
-            <button type="button" class="tool-btn" @click="runPlaceholder('高斯泼溅')">Mesh → 高斯泼溅</button>
-          </div>
+            <div class="btn-row">
+              <button type="button" class="tool-btn" @click="runPlaceholder('高斯泼溅'); activeDialog = ''">转换</button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -531,6 +629,7 @@ function openWorkspaceMenu() {
       :kind="lightboxKind"
       :texture="lightboxTexture"
       :material="lightboxMaterial"
+      :channel="lightboxChannel"
       @close="closeLightbox"
     />
 
@@ -733,6 +832,9 @@ function openWorkspaceMenu() {
   color: #aeb6c4;
   max-width: 260px;
   line-height: 1.4;
+}
+.menu-pop-wide {
+  min-width: 220px;
 }
 .toolbar {
   flex: 0 0 auto;
