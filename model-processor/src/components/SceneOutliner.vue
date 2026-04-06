@@ -3,6 +3,7 @@ const props = defineProps({
   title: { type: String, required: true },
   items: { type: Array, default: () => [] },
   expandedUuids: { type: Object, required: true },
+  selectedUuid: { type: String, default: null },
 })
 
 const emit = defineEmits(['toggle-expand', 'select'])
@@ -31,6 +32,7 @@ function isItemVisible(item) {
         :key="item.uuid"
         v-show="isItemVisible(item)"
         class="outline-row"
+        :class="{ 'is-selected': selectedUuid === item.uuid }"
         :style="{ paddingLeft: 8 + item.depth * 14 + 'px' }"
         @click="emit('select', item.uuid)"
       >
@@ -86,6 +88,10 @@ function isItemVisible(item) {
 }
 .outline-row:hover {
   background: #3d4654;
+}
+.outline-row.is-selected {
+  background: #3d5a82;
+  outline: 1px solid #5a8fd4;
 }
 .twisty {
   width: 12px;

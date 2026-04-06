@@ -1,7 +1,8 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import DualViewport from './DualViewport.vue'
 import SceneOutliner from './SceneOutliner.vue'
+import PropertyInspector from './PropertyInspector.vue'
 import { useLocalWorkspace } from '../composables/useLocalWorkspace.js'
 
 const dualRef = ref(null)
@@ -16,8 +17,18 @@ const resultOutline = ref([])
 const expandedSource = ref(new Set())
 const expandedResult = ref(new Set())
 
+const focusPanel = ref('source')
+const selectedSourceUuid = ref(null)
+const selectedResultUuid = ref(null)
+
+const showProcessModal = ref(false)
+const showBakeModal = ref(false)
+const showToolsModal = ref(false)
+const showWorkspaceModal = ref(false)
+
 const {
   workspaceLabel,
+  dirHandle,
   entries: workspaceEntries,
   lastError: workspaceError,
   listMaxDepth,
@@ -26,6 +37,28 @@ const {
   setManualLabel,
   clearHandle,
 } = useLocalWorkspace()
+
+const workspaceTitle = computed(() =>
+  dirHandle.value ? workspaceLabel.value || '（已选文件夹）' : '无工作目录',
+)
+
+watch(
+  workspaceTitle,
+  (t) => {
+    document.title = `模型处理工作台 — ${t}`
+  },
+  { immediate: true },
+)
+
+const inspectorPayload = computed(() => {
+  const panel = focusPanel.value
+  const id = panel === 'source' ? selectedSourceUuid.value : selectedResultUuid.value
+  if (!id || !dualRef.value) return { kind: 'empty' }
+  const items = panel === 'source' ? sourceOutline.value : resultOutline.value
+  const item = items.find((i) => i.uuid === id)
+  if (!item) return { kind: 'empty' }
+  return dualRef.value.resolveOutlineItem(panel, item) || { kind: 'empty' }
+})
 
 const meshTargetRatio = ref(0.5)
 const meshPreserveBorder = ref(true)
@@ -68,12 +101,25 @@ function onSourceLoaded(payload) {
   expandedSource.value = new Set(sourceOutline.value.filter((i) => i.hasChildren).map((i) => i.uuid))
   resultOutline.value = []
   expandedResult.value = new Set()
+  selectedSourceUuid.value = null
+  selectedResultUuid.value = null
+  focusPanel.value = 'source'
   setStatus(`已加载源模型 · 动画片段：${payload?.animations ?? 0}`, 'ok')
 }
 
 function onResultUpdated(payload) {
   resultOutline.value = payload?.outline || []
   expandedResult.value = new Set(resultOutline.value.filter((i) => i.hasChildren).map((i) => i.uuid))
+}
+
+function onSelectSource(uuid) {
+  focusPanel.value = 'source'
+  selectedSourceUuid.value = uuid
+}
+
+function onSelectResult(uuid) {
+  focusPanel.value = 'result'
+  selectedResultUuid.value = uuid
 }
 
 function toggleSourceExpand(uuid) {
@@ -142,6 +188,10 @@ function clearWorkspace() {
   clearHandle()
   setStatus('已清除本地工作目录句柄', 'ok')
 }
+
+function openWorkspaceMenu() {
+  showWorkspaceModal.value = true
+}
 </script>
 
 <template>
@@ -156,34 +206,10 @@ function clearWorkspace() {
           <button class="menu-item" type="button" @click="runPlaceholder('导出 glTF')">导出 glTF…</button>
         </div>
       </div>
-      <div class="menu-root">
-        <button class="menu-btn" type="button">处理</button>
-        <div class="menu-pop">
-          <button class="menu-item" type="button" @click="previewOptimize">预览优化结果</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('网格简化')">网格简化</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('骨骼简化')">骨骼 / 权重简化</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('贴图合并')">材质贴图合并</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('PBR 生成')">单贴图 → PBR</button>
-        </div>
-      </div>
-      <div class="menu-root">
-        <button class="menu-btn" type="button">烘焙</button>
-        <div class="menu-pop">
-          <button class="menu-item" type="button" @click="runPlaceholder('灯光烘焙')">灯光烘焙</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('烘焙到贴图')">烘焙到贴图</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('烘焙到顶点')">烘焙到顶点属性</button>
-        </div>
-      </div>
-      <div class="menu-root">
-        <button class="menu-btn" type="button">工具</button>
-        <div class="menu-pop">
-          <button class="menu-item" type="button" @click="runPlaceholder('切割瓦片')">切割瓦片</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('Mesh → 点云')">Mesh → 点云</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('点云处理')">点云处理</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('点云 → Mesh')">点云 → Mesh</button>
-          <button class="menu-item" type="button" @click="runPlaceholder('高斯泼溅')">Mesh → 高斯泼溅</button>
-        </div>
-      </div>
+      <button class="menu-btn menu-top" type="button" @click="showProcessModal = true">处理</button>
+      <button class="menu-btn menu-top" type="button" @click="showBakeModal = true">烘焙</button>
+      <button class="menu-btn menu-top" type="button" @click="showToolsModal = true">工具</button>
+      <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu">本地工作目录</button>
       <div class="menu-root">
         <button class="menu-btn" type="button">帮助</button>
         <div class="menu-pop">
@@ -191,6 +217,12 @@ function clearWorkspace() {
         </div>
       </div>
     </nav>
+
+    <div class="title-bar">
+      <span class="title-app">模型处理工作台</span>
+      <span class="title-sep">·</span>
+      <span class="title-workspace" :title="workspaceTitle">{{ workspaceTitle }}</span>
+    </div>
 
     <div class="toolbar">
       <button type="button" class="tool-btn primary" @click="openFiles">打开</button>
@@ -215,16 +247,20 @@ function clearWorkspace() {
     <div class="main-row">
       <aside class="left-dock">
         <SceneOutliner
-          title="场景大纲 · 优化前"
+          title="大纲 · 优化前"
           :items="sourceOutline"
           :expanded-uuids="expandedSource"
+          :selected-uuid="selectedSourceUuid"
           @toggle-expand="toggleSourceExpand"
+          @select="onSelectSource"
         />
         <SceneOutliner
-          title="场景大纲 · 优化后"
+          title="大纲 · 优化后"
           :items="resultOutline"
           :expanded-uuids="expandedResult"
+          :selected-uuid="selectedResultUuid"
           @toggle-expand="toggleResultExpand"
+          @select="onSelectResult"
         />
       </aside>
 
@@ -246,6 +282,23 @@ function clearWorkspace() {
           </button>
         </div>
         <div v-show="!dockCollapsed" class="dock-body">
+          <PropertyInspector :payload="inspectorPayload" />
+        </div>
+      </aside>
+    </div>
+
+    <!-- 处理 -->
+    <div v-if="showProcessModal" class="modal-backdrop" @click.self="showProcessModal = false">
+      <div class="modal-panel" role="dialog" aria-labelledby="dlg-process-title">
+        <header class="modal-head">
+          <h2 id="dlg-process-title">处理</h2>
+          <button type="button" class="modal-close" @click="showProcessModal = false">×</button>
+        </header>
+        <div class="modal-body">
+          <p class="modal-hint">以下为管线占位参数，可接入 WASM / 后端后生效。</p>
+          <div class="btn-row">
+            <button type="button" class="tool-btn accent" @click="previewOptimize(); showProcessModal = false">预览优化结果</button>
+          </div>
           <section class="sec">
             <h3 class="sec-title">网格 / 骨骼简化</h3>
             <label class="field">
@@ -263,15 +316,31 @@ function clearWorkspace() {
               <input v-model.number="maxInfluences" class="num" type="number" min="1" max="8" />
             </label>
           </section>
-
           <section class="sec">
             <h3 class="sec-title">材质 / 贴图</h3>
             <label class="check"><input v-model="mergeTextures" type="checkbox" /> 合并材质贴图（Atlas）</label>
             <label class="check"><input v-model="pbrFromSingle" type="checkbox" /> 单张贴图推测 PBR（占位）</label>
           </section>
+          <div class="btn-row">
+            <button type="button" class="tool-btn" @click="runPlaceholder('网格简化')">网格简化</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('骨骼简化')">骨骼 / 权重简化</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('贴图合并')">材质贴图合并</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('PBR 生成')">单贴图 → PBR</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
+    <!-- 烘焙 -->
+    <div v-if="showBakeModal" class="modal-backdrop" @click.self="showBakeModal = false">
+      <div class="modal-panel" role="dialog" aria-labelledby="dlg-bake-title">
+        <header class="modal-head">
+          <h2 id="dlg-bake-title">烘焙</h2>
+          <button type="button" class="modal-close" @click="showBakeModal = false">×</button>
+        </header>
+        <div class="modal-body">
           <section class="sec">
-            <h3 class="sec-title">烘焙</h3>
+            <h3 class="sec-title">烘焙参数</h3>
             <label class="field">
               <span>模式</span>
               <select v-model="bakeMode" class="sel">
@@ -293,7 +362,23 @@ function clearWorkspace() {
               <input v-model="vertexBakeChannels" class="txt" type="text" placeholder="color, ao, …" />
             </label>
           </section>
+          <div class="btn-row">
+            <button type="button" class="tool-btn" @click="runPlaceholder('灯光烘焙')">灯光烘焙</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到贴图')">烘焙到贴图</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('烘焙到顶点')">烘焙到顶点属性</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
+    <!-- 工具 -->
+    <div v-if="showToolsModal" class="modal-backdrop" @click.self="showToolsModal = false">
+      <div class="modal-panel" role="dialog" aria-labelledby="dlg-tools-title">
+        <header class="modal-head">
+          <h2 id="dlg-tools-title">工具</h2>
+          <button type="button" class="modal-close" @click="showToolsModal = false">×</button>
+        </header>
+        <div class="modal-body">
           <section class="sec">
             <h3 class="sec-title">瓦片 / 点云 / 高斯</h3>
             <label class="field">
@@ -329,44 +414,59 @@ function clearWorkspace() {
               </select>
             </label>
           </section>
-
-          <section class="sec">
-            <h3 class="sec-title">本地工作目录</h3>
-            <p class="hint">用于记录可访问目录（Chrome / Edge 可选文件夹）；纯浏览器无法遍历任意磁盘路径。</p>
-            <label class="field">
-              <span>标签 / 备注</span>
-              <input
-                :value="workspaceLabel"
-                class="txt"
-                type="text"
-                placeholder="手动填写工作区说明"
-                @input="setManualLabel($event.target.value)"
-              />
-            </label>
-            <label class="field">
-              <span>递归深度</span>
-              <input v-model.number="listMaxDepth" class="num" type="number" min="1" max="8" @change="refreshListing" />
-            </label>
-            <div class="btn-row">
-              <button type="button" class="tool-btn" @click="pickWorkspace">选择文件夹…</button>
-              <button type="button" class="tool-btn" @click="refreshListing">刷新列表</button>
-              <button type="button" class="tool-btn" title="清除已选目录句柄" @click="clearWorkspace">清除</button>
-            </div>
-            <div v-if="workspaceError" class="err">{{ workspaceError }}</div>
-            <ul class="file-mini">
-              <li
-                v-for="ent in workspaceEntries"
-                :key="ent.path"
-                class="file-line"
-                :style="{ paddingLeft: 6 + ent.depth * 10 + 'px' }"
-              >
-                <span class="tag">{{ ent.kind === 'directory' ? 'DIR' : 'FILE' }}</span>
-                <span class="path-text">{{ ent.path }}</span>
-              </li>
-            </ul>
-          </section>
+          <div class="btn-row">
+            <button type="button" class="tool-btn" @click="runPlaceholder('切割瓦片')">切割瓦片</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('Mesh → 点云')">Mesh → 点云</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('点云处理')">点云处理</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('点云 → Mesh')">点云 → Mesh</button>
+            <button type="button" class="tool-btn" @click="runPlaceholder('高斯泼溅')">Mesh → 高斯泼溅</button>
+          </div>
         </div>
-      </aside>
+      </div>
+    </div>
+
+    <!-- 本地工作目录 -->
+    <div v-if="showWorkspaceModal" class="modal-backdrop" @click.self="showWorkspaceModal = false">
+      <div class="modal-panel modal-wide" role="dialog" aria-labelledby="dlg-ws-title">
+        <header class="modal-head">
+          <h2 id="dlg-ws-title">本地工作目录</h2>
+          <button type="button" class="modal-close" @click="showWorkspaceModal = false">×</button>
+        </header>
+        <div class="modal-body">
+          <p class="hint">Chrome / Edge 可选文件夹授权；纯浏览器无法访问任意磁盘路径。</p>
+          <label class="field">
+            <span>标签 / 备注</span>
+            <input
+              :value="workspaceLabel"
+              class="txt"
+              type="text"
+              placeholder="手动填写工作区说明"
+              @input="setManualLabel($event.target.value)"
+            />
+          </label>
+          <label class="field">
+            <span>递归深度</span>
+            <input v-model.number="listMaxDepth" class="num" type="number" min="1" max="8" @change="refreshListing" />
+          </label>
+          <div class="btn-row">
+            <button type="button" class="tool-btn" @click="pickWorkspace">选择文件夹…</button>
+            <button type="button" class="tool-btn" @click="refreshListing">刷新列表</button>
+            <button type="button" class="tool-btn" @click="clearWorkspace">清除</button>
+          </div>
+          <div v-if="workspaceError" class="err">{{ workspaceError }}</div>
+          <ul class="file-mini">
+            <li
+              v-for="ent in workspaceEntries"
+              :key="ent.path"
+              class="file-line"
+              :style="{ paddingLeft: 6 + ent.depth * 10 + 'px' }"
+            >
+              <span class="tag">{{ ent.kind === 'directory' ? 'DIR' : 'FILE' }}</span>
+              <span class="path-text">{{ ent.path }}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
     </div>
 
     <footer class="statusbar" :class="`st-${statusKind}`">
@@ -392,6 +492,97 @@ function clearWorkspace() {
   padding: 4px 8px;
   background: linear-gradient(#3a3a3a, #2f2f2f);
   border-bottom: 1px solid #222;
+}
+.menu-top {
+  margin-right: 2px;
+}
+.title-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: linear-gradient(#2e3238, #262a30);
+  border-bottom: 1px solid #1a1d22;
+  color: #aeb6c4;
+}
+.title-app {
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.title-sep {
+  color: #5c6570;
+}
+.title-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9fdfb8;
+  font-family: ui-monospace, system-ui, sans-serif;
+  font-size: 11px;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal-panel {
+  width: min(480px, 100%);
+  max-height: min(90vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(#2c3138, #252a32);
+  border: 1px solid #4a5568;
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+.modal-panel.modal-wide {
+  width: min(560px, 100%);
+}
+.modal-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #3d4654;
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #d4dce8;
+}
+.modal-close {
+  border: none;
+  background: transparent;
+  color: #9aa3b0;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.modal-close:hover {
+  color: #e8eaed;
+}
+.modal-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 12px 14px 16px;
+}
+.modal-hint {
+  margin: 0 0 12px;
+  font-size: 11px;
+  color: #8e97a6;
+  line-height: 1.45;
 }
 .menu-root {
   position: relative;

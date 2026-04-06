@@ -8,9 +8,21 @@ import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
-import { buildOutlineItems } from '../utils/outline.js'
+import { buildRichOutline } from '../utils/outline.js'
+import { computeMeshStats, applyLodDrawRange } from '../utils/meshStats.js'
+import { findObject3DByUuid, findMaterialByUuid, findTextureByUuid } from '../utils/selectionResolve.js'
 
 const emit = defineEmits(['source-loaded', 'result-updated', 'viewer-error', 'status'])
+
+const lodSource = ref(1)
+const lodResult = ref(1)
+const statsSource = ref({ meshes: 0, triangles: 0, vertices: 0 })
+const statsResult = ref({ meshes: 0, triangles: 0, vertices: 0 })
+
+/** @type {import('three').AnimationClip[]} */
+let sourceClips = []
+/** @type {import('three').AnimationClip[]} */
+let resultClips = []
 
 const sourceEl = ref(null)
 const resultEl = ref(null)
@@ -91,24 +103,33 @@ function clearResult() {
     disposeObject3D(resultRoot)
     resultRoot = undefined
   }
+  statsResult.value = { meshes: 0, triangles: 0, vertices: 0 }
 }
 
 function applyObject3DToSource(object) {
   clearSource()
+  sourceClips = []
+  resultClips = []
+  lodSource.value = 1
   sourceRoot = object
   sourceRoot.traverse((obj) => {
     if (obj.isMesh || obj.isSkinnedMesh || obj.isPoints) obj.frustumCulled = false
   })
   sceneA.add(sourceRoot)
   fitCameraToObject(cameraA, controlsA, sourceRoot)
+  applyLodDrawRange(sourceRoot, lodSource.value)
   emit('source-loaded', {
-    outline: buildOutlineItems(sourceRoot),
+    outline: buildRichOutline(sourceRoot, { clips: [] }),
     animations: 0,
+    clips: [],
   })
 }
 
 function applyGltfToSource(gltf) {
   clearSource()
+  sourceClips = gltf.animations ? [...gltf.animations] : []
+  resultClips = []
+  lodSource.value = 1
   sourceRoot = gltf.scene
   sourceRoot.traverse((obj) => {
     if (obj.isMesh || obj.isSkinnedMesh || obj.isPoints) obj.frustumCulled = false
@@ -121,9 +142,11 @@ function applyGltfToSource(gltf) {
     }
   }
   fitCameraToObject(cameraA, controlsA, sourceRoot)
+  applyLodDrawRange(sourceRoot, lodSource.value)
   emit('source-loaded', {
-    outline: buildOutlineItems(sourceRoot),
+    outline: buildRichOutline(sourceRoot, { clips: sourceClips }),
     animations: gltf.animations?.length || 0,
+    clips: sourceClips,
   })
 }
 
@@ -250,6 +273,8 @@ function syncResultFromSource() {
     return
   }
   clearResult()
+  lodResult.value = 1
+  resultClips = [...sourceClips]
   try {
     resultRoot = cloneSkinned(sourceRoot)
     resultRoot.traverse((obj) => {
@@ -257,12 +282,52 @@ function syncResultFromSource() {
     })
     sceneB.add(resultRoot)
     fitCameraToObject(cameraB, controlsB, resultRoot)
-    emit('result-updated', { outline: buildOutlineItems(resultRoot) })
+    applyLodDrawRange(resultRoot, lodResult.value)
+    emit('result-updated', {
+      outline: buildRichOutline(resultRoot, { clips: resultClips }),
+      animations: resultClips.length,
+      clips: resultClips,
+    })
     emit('status', '已生成优化后预览（网格克隆）')
   } catch (e) {
     emit('viewer-error', e?.message || String(e))
   }
 }
+
+function resolveOutlineItem(panel, item) {
+  if (!item) return { kind: 'empty' }
+  if (item.refType === 'none' || item.category === 'section') {
+    return { kind: 'section', label: item.label }
+  }
+  const root = panel === 'source' ? sourceRoot : resultRoot
+  const clips = panel === 'source' ? sourceClips : resultClips
+  if (!root) return { kind: 'empty' }
+  if (item.refType === 'object3d') {
+    const object = findObject3DByUuid(root, item.refId)
+    return object ? { kind: 'object3d', object } : { kind: 'empty' }
+  }
+  if (item.refType === 'material') {
+    const material = findMaterialByUuid(root, item.refId)
+    return material ? { kind: 'material', material } : { kind: 'empty' }
+  }
+  if (item.refType === 'texture') {
+    const texture = findTextureByUuid(root, item.refId)
+    return texture ? { kind: 'texture', texture } : { kind: 'empty' }
+  }
+  if (item.refType === 'clip') {
+    const clip = clips[item.refId]
+    return clip ? { kind: 'clip', clip } : { kind: 'empty' }
+  }
+  return { kind: 'empty' }
+}
+
+watch(lodSource, (v) => {
+  if (sourceRoot) applyLodDrawRange(sourceRoot, v)
+})
+
+watch(lodResult, (v) => {
+  if (resultRoot) applyLodDrawRange(resultRoot, v)
+})
 
 async function loadUrl(url) {
   try {
@@ -364,6 +429,8 @@ function animate() {
   if (mixerB) mixerB.update(delta)
   controlsA?.update()
   controlsB?.update()
+  if (sourceRoot) statsSource.value = computeMeshStats(sourceRoot)
+  if (resultRoot) statsResult.value = computeMeshStats(resultRoot)
   if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
   if (rendererB && sceneB && cameraB) rendererB.render(sceneB, cameraB)
 }
@@ -464,6 +531,7 @@ defineExpose({
   loadFiles,
   syncResultFromSource,
   clearResult,
+  resolveOutlineItem,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)
     if (resultRoot) fitCameraToObject(cameraB, controlsB, resultRoot)
@@ -475,11 +543,37 @@ defineExpose({
   <div class="dual-viewport">
     <div class="vp-stack">
       <div class="vp-label">优化前（源）</div>
-      <div ref="sourceEl" class="vp-canvas" />
+      <div class="vp-canvas-wrap">
+        <div ref="sourceEl" class="vp-canvas" />
+        <div class="vp-hud">
+          <div class="hud-stats">
+            三角面 {{ statsSource.triangles.toLocaleString() }} · 顶点 {{ statsSource.vertices.toLocaleString() }} · Mesh
+            {{ statsSource.meshes }}
+          </div>
+          <label class="hud-lod">
+            <span>LOD</span>
+            <input v-model.number="lodSource" type="range" min="0.02" max="1" step="0.02" />
+            <span class="hud-lod-val">{{ (lodSource * 100).toFixed(0) }}%</span>
+          </label>
+        </div>
+      </div>
     </div>
     <div class="vp-stack">
       <div class="vp-label">优化后（目标）</div>
-      <div ref="resultEl" class="vp-canvas" />
+      <div class="vp-canvas-wrap">
+        <div ref="resultEl" class="vp-canvas" />
+        <div class="vp-hud">
+          <div class="hud-stats">
+            三角面 {{ statsResult.triangles.toLocaleString() }} · 顶点 {{ statsResult.vertices.toLocaleString() }} · Mesh
+            {{ statsResult.meshes }}
+          </div>
+          <label class="hud-lod">
+            <span>LOD</span>
+            <input v-model.number="lodResult" type="range" min="0.02" max="1" step="0.02" />
+            <span class="hud-lod-val">{{ (lodResult * 100).toFixed(0) }}%</span>
+          </label>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -510,10 +604,57 @@ defineExpose({
   background: linear-gradient(#333945, #2a3038);
   border-bottom: 1px solid #1f242c;
 }
+.vp-canvas-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
 .vp-canvas {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
+}
+.vp-hud {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: #d0d8e6;
+  background: rgba(15, 17, 21, 0.72);
+  border: 1px solid #3a4558;
+  border-radius: 4px;
+  pointer-events: auto;
+  z-index: 2;
+}
+.hud-stats {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.hud-lod {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 0;
+  cursor: pointer;
+}
+.hud-lod input[type='range'] {
+  width: 88px;
+  vertical-align: middle;
+}
+.hud-lod-val {
+  min-width: 34px;
+  color: #a8d4ff;
+  font-variant-numeric: tabular-nums;
 }
 .vp-canvas :deep(canvas) {
   display: block;
