@@ -11,6 +11,9 @@ import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js
 import { buildRichOutline } from '../utils/outline.js'
 import { computeMeshStats, applyLodDrawRange } from '../utils/meshStats.js'
 import { findObject3DByUuid, findMaterialByUuid, findTextureByUuid } from '../utils/selectionResolve.js'
+import { attachCompressedTextureHandlers } from '../utils/attachTextureHandlers.js'
+import { estimateSceneMemory } from '../utils/memoryEstimate.js'
+import { aggregateMeshInfoUnderNode } from '../utils/meshAggregate.js'
 
 const emit = defineEmits(['source-loaded', 'result-updated', 'viewer-error', 'status'])
 
@@ -40,11 +43,14 @@ let mixerA
 let mixerB
 const clock = new THREE.Clock()
 
-const loader = new GLTFLoader()
 const dracoLoader = new DRACOLoader()
 dracoLoader.setDecoderPath('/draco/')
 dracoLoader.preload()
-loader.setDRACOLoader(dracoLoader)
+
+/** @type {GLTFLoader | null} */
+let gltfLoader = null
+/** @type {THREE.LoadingManager | null} */
+let sharedLoadingManager = null
 
 let sourceRoot = null
 let resultRoot = null
@@ -288,7 +294,7 @@ function syncResultFromSource() {
       animations: resultClips.length,
       clips: resultClips,
     })
-    emit('status', '已生成优化后预览（网格克隆）')
+    emit('status', '已生成处理后预览（网格克隆）')
   } catch (e) {
     emit('viewer-error', e?.message || String(e))
   }
@@ -304,7 +310,9 @@ function resolveOutlineItem(panel, item) {
   if (!root) return { kind: 'empty' }
   if (item.refType === 'object3d') {
     const object = findObject3DByUuid(root, item.refId)
-    return object ? { kind: 'object3d', object } : { kind: 'empty' }
+    if (!object) return { kind: 'empty' }
+    const meshInfo = aggregateMeshInfoUnderNode(object)
+    return { kind: 'object3d', object, meshInfo }
   }
   if (item.refType === 'material') {
     const material = findMaterialByUuid(root, item.refId)
@@ -331,12 +339,16 @@ watch(lodResult, (v) => {
 
 async function loadUrl(url) {
   try {
+    if (!gltfLoader) {
+      emit('viewer-error', '视口未就绪，请稍后重试')
+      return
+    }
     const pathOnly = url.split('?')[0].split('#')[0].toLowerCase()
     if (pathOnly.endsWith('.obj')) {
       await loadObjFromUrl(url)
       return
     }
-    const gltf = await loader.loadAsync(url)
+    const gltf = await gltfLoader.loadAsync(url)
     applyGltfToSource(gltf)
     emit('status', `已加载：${url}`)
   } catch (e) {
@@ -358,9 +370,13 @@ async function loadFile(file) {
     }
     return
   }
+  if (!gltfLoader) {
+    emit('viewer-error', '视口未就绪，请稍后重试')
+    return
+  }
   const objectUrl = URL.createObjectURL(file)
   try {
-    const gltf = await loader.loadAsync(objectUrl)
+    const gltf = await gltfLoader.loadAsync(objectUrl)
     applyGltfToSource(gltf)
   } catch (e) {
     const msg = e?.message || String(e)
@@ -403,6 +419,7 @@ async function loadFiles(fileList) {
     throw new Error('请至少选择一个 .gltf 或 .glb 文件')
   }
   const manager = new THREE.LoadingManager()
+  attachCompressedTextureHandlers(manager, rendererA)
   manager.setURLModifier(urlModifierFromFileMap(map))
   const localLoader = new GLTFLoader(manager)
   localLoader.setDRACOLoader(dracoLoader)
@@ -492,6 +509,12 @@ function mount() {
   cameraB = b.camera
   rendererB = b.renderer
   controlsB = b.controls
+
+  sharedLoadingManager = new THREE.LoadingManager()
+  attachCompressedTextureHandlers(sharedLoadingManager, rendererA)
+  gltfLoader = new GLTFLoader(sharedLoadingManager)
+  gltfLoader.setDRACOLoader(dracoLoader)
+
   window.addEventListener('resize', onResize)
   onResize()
   animate()
@@ -526,12 +549,18 @@ watch([sourceEl, resultEl], async () => {
   if (sourceEl.value && resultEl.value && !rendererA) mount()
 })
 
+function getMemoryEstimate(which) {
+  const root = which === 'source' ? sourceRoot : resultRoot
+  return estimateSceneMemory(root)
+}
+
 defineExpose({
   loadUrl,
   loadFiles,
   syncResultFromSource,
   clearResult,
   resolveOutlineItem,
+  getMemoryEstimate,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)
     if (resultRoot) fitCameraToObject(cameraB, controlsB, resultRoot)
@@ -542,7 +571,7 @@ defineExpose({
 <template>
   <div class="dual-viewport">
     <div class="vp-stack">
-      <div class="vp-label">优化前（源）</div>
+      <div class="vp-label">处理前</div>
       <div class="vp-canvas-wrap">
         <div ref="sourceEl" class="vp-canvas" />
         <div class="vp-hud">
@@ -559,7 +588,7 @@ defineExpose({
       </div>
     </div>
     <div class="vp-stack">
-      <div class="vp-label">优化后（目标）</div>
+      <div class="vp-label">处理后</div>
       <div class="vp-canvas-wrap">
         <div ref="resultEl" class="vp-canvas" />
         <div class="vp-hud">

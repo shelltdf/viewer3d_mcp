@@ -38,13 +38,15 @@ export function buildRichOutline(root, { clips = [] } = {}) {
     uuid: SCENE_SEC,
     parentUuid: '',
     depth: 0,
-    label: '场景',
+    label: '场景 (0)',
     hasChildren: true,
     category: 'section',
     refType: 'none',
   })
 
+  let sceneObjectCount = 0
   const walkScene = (obj, parentUuid) => {
+    sceneObjectCount += 1
     const label = obj.name ? `${obj.name} (${obj.type})` : obj.type
     const parentItem = items.find((x) => x.uuid === parentUuid)
     const depth = parentItem ? parentItem.depth + 1 : 1
@@ -62,6 +64,11 @@ export function buildRichOutline(root, { clips = [] } = {}) {
   }
 
   if (root) walkScene(root, SCENE_SEC)
+  const secScene = items.find((i) => i.uuid === SCENE_SEC)
+  if (secScene) {
+    secScene.label = `场景 (${sceneObjectCount})`
+    secScene.hasChildren = sceneObjectCount > 0
+  }
 
   const matSeen = new Map()
   const texSeen = new Map()
@@ -79,7 +86,7 @@ export function buildRichOutline(root, { clips = [] } = {}) {
     uuid: MAT_SEC,
     parentUuid: '',
     depth: 0,
-    label: '材质',
+    label: `材质 (${matSeen.size})`,
     hasChildren: matSeen.size > 0,
     category: 'section',
     refType: 'none',
@@ -101,7 +108,7 @@ export function buildRichOutline(root, { clips = [] } = {}) {
     uuid: TEX_SEC,
     parentUuid: '',
     depth: 0,
-    label: '贴图',
+    label: `贴图 (${texSeen.size})`,
     hasChildren: texSeen.size > 0,
     category: 'section',
     refType: 'none',
@@ -128,7 +135,7 @@ export function buildRichOutline(root, { clips = [] } = {}) {
     uuid: ANIM_SEC,
     parentUuid: '',
     depth: 0,
-    label: '动画',
+    label: `动画 (${clips.length})`,
     hasChildren: clips.length > 0,
     category: 'section',
     refType: 'none',

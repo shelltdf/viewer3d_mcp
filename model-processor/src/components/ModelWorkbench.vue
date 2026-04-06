@@ -1,9 +1,12 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import DualViewport from './DualViewport.vue'
 import SceneOutliner from './SceneOutliner.vue'
 import PropertyInspector from './PropertyInspector.vue'
+import PreviewLightbox from './PreviewLightbox.vue'
+import MemoryEstimateModal from './MemoryEstimateModal.vue'
 import { useLocalWorkspace } from '../composables/useLocalWorkspace.js'
+import { useActivityLog } from '../composables/useActivityLog.js'
 
 const dualRef = ref(null)
 const fileInputRef = ref(null)
@@ -25,6 +28,16 @@ const showProcessModal = ref(false)
 const showBakeModal = ref(false)
 const showToolsModal = ref(false)
 const showWorkspaceModal = ref(false)
+const showLogModal = ref(false)
+const showMemoryModal = ref(false)
+const memoryPanel = ref('source')
+
+const lightboxOpen = ref(false)
+const lightboxKind = ref('')
+const lightboxTexture = ref(null)
+const lightboxMaterial = ref(null)
+
+const { lines: logLines, push: logPush, formatAll: formatLogAll } = useActivityLog()
 
 const {
   workspaceLabel,
@@ -83,9 +96,52 @@ const gaussianMode = ref('colmap-style')
 
 const dockCollapsed = ref(false)
 
+const logTextDisplay = computed(() =>
+  logLines.value
+    .map((l) => {
+      const d = new Date(l.t)
+      const ts = d.toLocaleTimeString('zh-CN', { hour12: false })
+      return `[${ts}] [${l.kind}] ${l.text}`
+    })
+    .join('\n'),
+)
+
 function setStatus(text, kind = 'idle') {
   statusText.value = text
   statusKind.value = kind
+  logPush(text, kind)
+}
+
+onMounted(() => {
+  logPush('就绪', 'idle')
+})
+
+function openLogModal() {
+  showLogModal.value = true
+}
+
+async function copyLogText() {
+  try {
+    await navigator.clipboard.writeText(logTextDisplay.value || formatLogAll())
+    setStatus('日志已复制到剪贴板', 'ok')
+  } catch {
+    setStatus('复制失败（权限或浏览器限制）', 'error')
+  }
+}
+
+function onPreviewLightbox(payload) {
+  lightboxKind.value = payload.kind
+  lightboxTexture.value = payload.texture || null
+  lightboxMaterial.value = payload.material || null
+  lightboxOpen.value = true
+}
+
+function closeLightbox() {
+  lightboxOpen.value = false
+}
+
+function getMemoryEst(panel) {
+  return dualRef.value?.getMemoryEstimate?.(panel) ?? null
 }
 
 function onViewerError(msg) {
@@ -167,7 +223,7 @@ async function onPickFile(e) {
 }
 
 function previewOptimize() {
-  setStatus('正在生成优化后预览…', 'loading')
+  setStatus('正在生成处理后预览…', 'loading')
   dualRef.value?.syncResultFromSource()
 }
 
@@ -210,6 +266,7 @@ function openWorkspaceMenu() {
       <button class="menu-btn menu-top" type="button" @click="showBakeModal = true">烘焙</button>
       <button class="menu-btn menu-top" type="button" @click="showToolsModal = true">工具</button>
       <button class="menu-btn menu-top" type="button" @click="openWorkspaceMenu">本地工作目录</button>
+      <button class="menu-btn menu-top" type="button" @click="showMemoryModal = true">内存预览</button>
       <div class="menu-root">
         <button class="menu-btn" type="button">帮助</button>
         <div class="menu-pop">
@@ -227,7 +284,7 @@ function openWorkspaceMenu() {
     <div class="toolbar">
       <button type="button" class="tool-btn primary" @click="openFiles">打开</button>
       <button type="button" class="tool-btn" @click="dualRef?.resetCameras?.()">重置相机</button>
-      <button type="button" class="tool-btn accent" @click="previewOptimize">预览优化</button>
+      <button type="button" class="tool-btn accent" @click="previewOptimize">预览处理结果</button>
       <span class="toolbar-gap" />
       <label class="inline">
         <span class="lbl">URL</span>
@@ -239,7 +296,7 @@ function openWorkspaceMenu() {
         class="hidden"
         type="file"
         multiple
-        accept=".gltf,.glb,.bin,.obj,.mtl,image/*"
+        accept=".gltf,.glb,.bin,.obj,.mtl,.dds,.ktx,.ktx2,image/*"
         @change="onPickFile"
       />
     </div>
@@ -247,7 +304,7 @@ function openWorkspaceMenu() {
     <div class="main-row">
       <aside class="left-dock">
         <SceneOutliner
-          title="大纲 · 优化前"
+          title="大纲 · 处理前"
           :items="sourceOutline"
           :expanded-uuids="expandedSource"
           :selected-uuid="selectedSourceUuid"
@@ -255,7 +312,7 @@ function openWorkspaceMenu() {
           @select="onSelectSource"
         />
         <SceneOutliner
-          title="大纲 · 优化后"
+          title="大纲 · 处理后"
           :items="resultOutline"
           :expanded-uuids="expandedResult"
           :selected-uuid="selectedResultUuid"
@@ -282,7 +339,7 @@ function openWorkspaceMenu() {
           </button>
         </div>
         <div v-show="!dockCollapsed" class="dock-body">
-          <PropertyInspector :payload="inspectorPayload" />
+          <PropertyInspector :payload="inspectorPayload" @open-lightbox="onPreviewLightbox" />
         </div>
       </aside>
     </div>
@@ -297,7 +354,7 @@ function openWorkspaceMenu() {
         <div class="modal-body">
           <p class="modal-hint">以下为管线占位参数，可接入 WASM / 后端后生效。</p>
           <div class="btn-row">
-            <button type="button" class="tool-btn accent" @click="previewOptimize(); showProcessModal = false">预览优化结果</button>
+            <button type="button" class="tool-btn accent" @click="previewOptimize(); showProcessModal = false">预览处理结果</button>
           </div>
           <section class="sec">
             <h3 class="sec-title">网格 / 骨骼简化</h3>
@@ -469,7 +526,38 @@ function openWorkspaceMenu() {
       </div>
     </div>
 
-    <footer class="statusbar" :class="`st-${statusKind}`">
+    <PreviewLightbox
+      :open="lightboxOpen"
+      :kind="lightboxKind"
+      :texture="lightboxTexture"
+      :material="lightboxMaterial"
+      @close="closeLightbox"
+    />
+
+    <MemoryEstimateModal
+      :open="showMemoryModal"
+      :panel="memoryPanel"
+      :get-estimate="getMemoryEst"
+      @close="showMemoryModal = false"
+      @update:panel="memoryPanel = $event"
+    />
+
+    <div v-if="showLogModal" class="modal-backdrop" @click.self="showLogModal = false">
+      <div class="modal-panel log-modal" role="dialog">
+        <header class="modal-head">
+          <h2>日志</h2>
+          <button type="button" class="modal-close" @click="showLogModal = false">×</button>
+        </header>
+        <div class="modal-body log-body">
+          <pre class="log-pre">{{ logTextDisplay }}</pre>
+        </div>
+        <div class="log-actions">
+          <button type="button" class="tool-btn" @click="copyLogText">复制文本</button>
+        </div>
+      </div>
+    </div>
+
+    <footer class="statusbar" :class="`st-${statusKind}`" title="双击打开日志" @dblclick="openLogModal">
       <span>{{ statusText }}</span>
     </footer>
   </div>
@@ -860,6 +948,7 @@ function openWorkspaceMenu() {
   font-size: 12px;
   border-top: 1px solid #3a3f4a;
   background: linear-gradient(#333842, #2a2f38);
+  cursor: pointer;
 }
 .st-loading {
   color: #a8d4ff;
@@ -872,5 +961,29 @@ function openWorkspaceMenu() {
 }
 .st-idle {
   color: #c9d0dc;
+}
+.log-modal {
+  width: min(640px, 94vw);
+  max-height: min(80vh, 560px);
+  display: flex;
+  flex-direction: column;
+}
+.log-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.log-pre {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, monospace;
+  color: #d0d8e6;
+}
+.log-actions {
+  padding: 8px 14px 12px;
+  border-top: 1px solid #3d4654;
 }
 </style>

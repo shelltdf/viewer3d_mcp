@@ -1,10 +1,14 @@
 <script setup>
 import { computed } from 'vue'
+import TexturePreviewCanvas from './TexturePreviewCanvas.vue'
+import MaterialPreviewBall from './MaterialPreviewBall.vue'
 
 const props = defineProps({
-  /** @type {{ kind: string, label?: string, object?: object, material?: object, texture?: object, clip?: object } | null} */
+  /** @type {any} */
   payload: { type: Object, default: null },
 })
+
+const emit = defineEmits(['open-lightbox'])
 
 const title = computed(() => {
   const p = props.payload
@@ -23,6 +27,16 @@ function fmt(v) {
   if (v === undefined || v === null) return '—'
   if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(4)
   return String(v)
+}
+
+function onDblTex() {
+  const p = props.payload
+  if (p?.kind === 'texture' && p.texture) emit('open-lightbox', { kind: 'texture', texture: p.texture })
+}
+
+function onDblMat() {
+  const p = props.payload
+  if (p?.kind === 'material' && p.material) emit('open-lightbox', { kind: 'material', material: p.material })
 }
 </script>
 
@@ -45,22 +59,59 @@ function fmt(v) {
         <dd class="mono">{{ payload.object.uuid }}</dd>
         <dt>可见</dt>
         <dd>{{ payload.object.visible ? '是' : '否' }}</dd>
-        <template v-if="payload.object.isMesh || payload.object.isSkinnedMesh">
+      </dl>
+
+      <template v-if="payload.meshInfo">
+        <h4 class="sub-title">子树 Mesh 汇总</h4>
+        <p class="mesh-sum">
+          合计：三角面 {{ payload.meshInfo.totals.triangles.toLocaleString() }} · 顶点
+          {{ payload.meshInfo.totals.vertices.toLocaleString() }} · Mesh {{ payload.meshInfo.totals.meshes }}
+        </p>
+        <div v-if="payload.meshInfo.meshes.length" class="mesh-table-wrap">
+          <table class="mesh-table">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>三角面</th>
+                <th>顶点</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in payload.meshInfo.meshes" :key="m.uuid">
+                <td>{{ m.name }}</td>
+                <td>{{ m.triangles.toLocaleString() }}</td>
+                <td>{{ m.vertices.toLocaleString() }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="hint">该节点下无 Mesh（可能为组 / 变换节点）</p>
+      </template>
+
+      <template v-if="payload.object.isMesh || payload.object.isSkinnedMesh">
+        <h4 class="sub-title">本节点（若为 Mesh）</h4>
+        <dl class="kv">
           <dt>几何</dt>
           <dd>{{ payload.object.geometry?.type || '—' }}</dd>
           <dt>材质数</dt>
           <dd>
             {{ Array.isArray(payload.object.material) ? payload.object.material.length : payload.object.material ? 1 : 0 }}
           </dd>
-        </template>
-        <template v-if="payload.object.isSkinnedMesh">
+        </dl>
+      </template>
+      <template v-if="payload.object.isSkinnedMesh">
+        <dl class="kv">
           <dt>骨骼</dt>
           <dd>{{ payload.object.skeleton?.bones?.length ?? '—' }}</dd>
-        </template>
-      </dl>
+        </dl>
+      </template>
     </template>
 
     <template v-else-if="payload.kind === 'material' && payload.material">
+      <div class="preview-block" title="双击最大化预览" @dblclick="onDblMat">
+        <MaterialPreviewBall :material="payload.material" :size="168" />
+        <span class="preview-tip">双击放大</span>
+      </div>
       <dl class="kv">
         <dt>类型</dt>
         <dd>{{ payload.material.type }}</dd>
@@ -81,6 +132,10 @@ function fmt(v) {
     </template>
 
     <template v-else-if="payload.kind === 'texture' && payload.texture">
+      <div class="preview-block" title="双击最大化预览" @dblclick="onDblTex">
+        <TexturePreviewCanvas :texture="payload.texture" :size="168" />
+        <span class="preview-tip">双击放大</span>
+      </div>
       <dl class="kv">
         <dt>名称</dt>
         <dd>{{ payload.texture.name || '（未命名）' }}</dd>
@@ -134,6 +189,49 @@ function fmt(v) {
   margin: 0;
   color: #8e97a6;
   font-size: 11px;
+}
+.sub-title {
+  margin: 12px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8aa4c8;
+}
+.mesh-sum {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #b8c0d0;
+}
+.mesh-table-wrap {
+  overflow: auto;
+  max-height: 200px;
+  border: 1px solid #3a4558;
+  border-radius: 4px;
+}
+.mesh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.mesh-table th,
+.mesh-table td {
+  padding: 4px 6px;
+  text-align: left;
+  border-bottom: 1px solid #2e3440;
+}
+.mesh-table th {
+  background: #2a3038;
+  color: #9aa3b0;
+}
+.preview-block {
+  position: relative;
+  margin-bottom: 10px;
+  cursor: zoom-in;
+}
+.preview-tip {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #6b7a8e;
 }
 .kv {
   margin: 0;
