@@ -5,6 +5,7 @@ import SceneOutliner from './SceneOutliner.vue'
 import PropertyInspector from './PropertyInspector.vue'
 import PreviewLightbox from './PreviewLightbox.vue'
 import MemoryEstimateModal from './MemoryEstimateModal.vue'
+import DuplicateResourceModal from './DuplicateResourceModal.vue'
 import { useLocalWorkspace } from '../composables/useLocalWorkspace.js'
 import { useActivityLog } from '../composables/useActivityLog.js'
 
@@ -30,6 +31,14 @@ const showWorkspaceModal = ref(false)
 const showLogModal = ref(false)
 const showMemoryModal = ref(false)
 const memoryPanel = ref('source')
+const showDuplicateModal = ref(false)
+const dupPanel = ref('source')
+const memStats = ref({
+  js: null,
+  gpuEst: 0,
+  gpuPeakEst: 0,
+  textures: 0,
+})
 
 const lightboxOpen = ref(false)
 const lightboxKind = ref('')
@@ -171,6 +180,35 @@ function getMemoryEst(panel) {
   return dualRef.value?.getMemoryEstimate?.(panel) ?? null
 }
 
+function getDupAnalysis(panel) {
+  return dualRef.value?.getDuplicateAnalysis?.(panel) ?? null
+}
+
+function onDuplicateMerge(payload) {
+  dualRef.value?.applyDuplicateMerges?.(payload)
+  showDuplicateModal.value = false
+  setStatus('已执行重复资源合并', 'ok')
+}
+
+function onOutlineUpdated(payload) {
+  if (payload.panel === 'source') {
+    sourceOutline.value = payload.outline || []
+  } else {
+    resultOutline.value = payload.outline || []
+  }
+}
+
+function onMemoryStats(s) {
+  memStats.value = s
+}
+
+function fmtMemBar(n) {
+  if (n == null || Number.isNaN(n)) return '—'
+  if (n < 1024) return `${Math.round(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
 function onViewerError(msg) {
   setStatus(msg || '错误', 'error')
 }
@@ -298,6 +336,8 @@ function openWorkspaceMenu() {
           <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'">骨骼 / 权重简化…</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'">材质贴图合并…</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-pbr'">单贴图 → PBR…</button>
+          <div class="menu-sep" />
+          <button class="menu-item" type="button" @click="showDuplicateModal = true">重复资源共享…</button>
         </div>
       </div>
       <div class="menu-root">
@@ -381,6 +421,8 @@ function openWorkspaceMenu() {
           @status="onDualStatus"
           @source-loaded="onSourceLoaded"
           @result-updated="onResultUpdated"
+          @outline-updated="onOutlineUpdated"
+          @memory-stats="onMemoryStats"
         />
       </main>
 
@@ -641,6 +683,15 @@ function openWorkspaceMenu() {
       @update:panel="memoryPanel = $event"
     />
 
+    <DuplicateResourceModal
+      :open="showDuplicateModal"
+      :panel="dupPanel"
+      :get-analysis="getDupAnalysis"
+      @close="showDuplicateModal = false"
+      @update:panel="dupPanel = $event"
+      @merge="onDuplicateMerge"
+    />
+
     <div v-if="showLogModal" class="modal-backdrop" @click.self="showLogModal = false">
       <div class="modal-panel log-modal" role="dialog">
         <header class="modal-head">
@@ -657,7 +708,15 @@ function openWorkspaceMenu() {
     </div>
 
     <footer class="statusbar" :class="`st-${statusKind}`" title="双击打开日志" @dblclick="openLogModal">
-      <span>{{ statusText }}</span>
+      <span class="status-msg">{{ statusText }}</span>
+      <span class="status-mem" title="JS 堆仅在 Chromium 系可用；GPU/显存为粗估；峰值为本会话记录">
+        <template v-if="memStats.js">
+          JS {{ fmtMemBar(memStats.js.used) }} / {{ fmtMemBar(memStats.js.limit) }}
+        </template>
+        <template v-else>JS —</template>
+        · GPU 估 {{ fmtMemBar(memStats.gpuEst) }} · 峰值 {{ fmtMemBar(memStats.gpuPeakEst) }} · 纹理
+        {{ memStats.textures }}
+      </span>
     </footer>
   </div>
 </template>
@@ -1046,11 +1105,29 @@ function openWorkspaceMenu() {
 }
 .statusbar {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 7px 12px;
   font-size: 12px;
   border-top: 1px solid #3a3f4a;
   background: linear-gradient(#333842, #2a2f38);
   cursor: pointer;
+}
+.status-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.status-mem {
+  flex: 0 1 auto;
+  font-size: 10px;
+  color: #8aa4c8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  max-width: 55vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .st-loading {
   color: #a8d4ff;

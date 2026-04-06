@@ -16,8 +16,22 @@ import { estimateSceneMemory } from '../utils/memoryEstimate.js'
 import { aggregateMeshInfoUnderNode } from '../utils/meshAggregate.js'
 import { collectUniqueTexturesForScene } from '../utils/collectSceneTextures.js'
 import { getMeshMaterialsMemoryTable } from '../utils/meshMaterialInfo.js'
+import {
+  analyzeDuplicateResources,
+  mergeTextureGroup,
+  mergeMaterialGroup,
+  mergeMeshInstances,
+} from '../utils/analyzeDuplicateResources.js'
+import { applyDisplayMode, clearSkeletonHelpers } from '../utils/displayModeHelpers.js'
 
-const emit = defineEmits(['source-loaded', 'result-updated', 'viewer-error', 'status'])
+const emit = defineEmits([
+  'source-loaded',
+  'result-updated',
+  'viewer-error',
+  'status',
+  'outline-updated',
+  'memory-stats',
+])
 
 const lodSource = ref(1)
 const lodResult = ref(1)
@@ -27,6 +41,14 @@ const statsResult = ref({ meshes: 0, triangles: 0, vertices: 0 })
 const linkCameras = ref(true)
 const viewHudSource = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
 const viewHudResult = ref({ cpu: 0, vram: 0, geo: 0, tex: 0 })
+
+/** @type {'shaded' | 'wireframe' | 'albedo' | 'normals' | 'vertices' | 'skeleton'} */
+const displayMode = ref('shaded')
+const hudExpanded = ref(true)
+const displayCtxA = { skeletonHelpers: [] }
+const displayCtxB = { skeletonHelpers: [] }
+let memEmitTick = 0
+let gpuPeakEst = 0
 
 function fmtBytes(n) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -100,7 +122,25 @@ function disposeObject3D(root) {
   })
 }
 
+function reapplyDisplayModes() {
+  applyDisplayMode(sourceRoot, displayMode.value, displayCtxA)
+  applyDisplayMode(resultRoot, displayMode.value, displayCtxB)
+}
+
+function refreshOutline(panel) {
+  const root = panel === 'source' ? sourceRoot : resultRoot
+  const clips = panel === 'source' ? sourceClips : resultClips
+  if (!root) return
+  emit('outline-updated', {
+    panel,
+    outline: buildRichOutline(root, { clips }),
+    animations: clips.length,
+    clips,
+  })
+}
+
 function clearSource() {
+  clearSkeletonHelpers(displayCtxA)
   if (mixerA) {
     mixerA.stopAllAction()
     mixerA = undefined
@@ -113,6 +153,7 @@ function clearSource() {
 }
 
 function clearResult() {
+  clearSkeletonHelpers(displayCtxB)
   if (mixerB) {
     mixerB.stopAllAction()
     mixerB = undefined
@@ -126,6 +167,7 @@ function clearResult() {
 }
 
 function applyObject3DToSource(object) {
+  gpuPeakEst = 0
   clearSource()
   sourceClips = []
   resultClips = []
@@ -137,6 +179,7 @@ function applyObject3DToSource(object) {
   sceneA.add(sourceRoot)
   fitCameraToObject(cameraA, controlsA, sourceRoot)
   applyLodDrawRange(sourceRoot, lodSource.value)
+  reapplyDisplayModes()
   emit('source-loaded', {
     outline: buildRichOutline(sourceRoot, { clips: [] }),
     animations: 0,
@@ -145,6 +188,7 @@ function applyObject3DToSource(object) {
 }
 
 function applyGltfToSource(gltf) {
+  gpuPeakEst = 0
   clearSource()
   sourceClips = gltf.animations ? [...gltf.animations] : []
   resultClips = []
@@ -162,6 +206,7 @@ function applyGltfToSource(gltf) {
   }
   fitCameraToObject(cameraA, controlsA, sourceRoot)
   applyLodDrawRange(sourceRoot, lodSource.value)
+  reapplyDisplayModes()
   emit('source-loaded', {
     outline: buildRichOutline(sourceRoot, { clips: sourceClips }),
     animations: gltf.animations?.length || 0,
@@ -302,6 +347,7 @@ function syncResultFromSource() {
     sceneB.add(resultRoot)
     fitCameraToObject(cameraB, controlsB, resultRoot)
     applyLodDrawRange(resultRoot, lodResult.value)
+    reapplyDisplayModes()
     emit('result-updated', {
       outline: buildRichOutline(resultRoot, { clips: resultClips }),
       animations: resultClips.length,
@@ -352,6 +398,10 @@ watch(lodSource, (v) => {
 
 watch(lodResult, (v) => {
   if (resultRoot) applyLodDrawRange(resultRoot, v)
+})
+
+watch(displayMode, () => {
+  reapplyDisplayModes()
 })
 
 async function loadUrl(url) {
@@ -487,6 +537,27 @@ function animate() {
   if (resultRoot) statsResult.value = computeMeshStats(resultRoot)
   refreshViewHud(sourceRoot, rendererA, viewHudSource)
   refreshViewHud(resultRoot, rendererB, viewHudResult)
+  memEmitTick++
+  if (memEmitTick >= 48) {
+    memEmitTick = 0
+    const js =
+      typeof performance !== 'undefined' && performance.memory
+        ? {
+            used: performance.memory.usedJSHeapSize,
+            limit: performance.memory.jsHeapSizeLimit,
+          }
+        : null
+    const s = viewHudSource.value
+    const r = viewHudResult.value
+    const gpuEst = (s.vram || 0) + (r.vram || 0)
+    gpuPeakEst = Math.max(gpuPeakEst, gpuEst)
+    emit('memory-stats', {
+      js,
+      gpuEst,
+      gpuPeakEst,
+      textures: (s.textures || 0) + (r.textures || 0),
+    })
+  }
   if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
   if (rendererB && sceneB && cameraB) rendererB.render(sceneB, cameraB)
 }
@@ -617,6 +688,24 @@ function getMemoryEstimate(which) {
   return { ...est, textureMosaic }
 }
 
+function getDuplicateAnalysis(which) {
+  const root = which === 'source' ? sourceRoot : resultRoot
+  return analyzeDuplicateResources(root)
+}
+
+function applyDuplicateMerges(payload) {
+  const { panel, ops } = payload
+  const root = panel === 'source' ? sourceRoot : resultRoot
+  if (!root || !ops?.length) return
+  for (const op of ops) {
+    if (op.kind === 'texture') mergeTextureGroup(root, op.textures, op.keepUuid)
+    else if (op.kind === 'material') mergeMaterialGroup(root, op.materials, op.keepUuid)
+    else if (op.kind === 'mesh') mergeMeshInstances(op.keepUuid, op.items)
+  }
+  refreshOutline(panel)
+  emit('status', '已合并所选重复资源')
+}
+
 defineExpose({
   loadUrl,
   loadFiles,
@@ -624,6 +713,8 @@ defineExpose({
   clearResult,
   resolveOutlineItem,
   getMemoryEstimate,
+  getDuplicateAnalysis,
+  applyDuplicateMerges,
   linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)
@@ -634,11 +725,30 @@ defineExpose({
 
 <template>
   <div class="dual-viewport">
+    <div class="display-mode-bar" title="双视口共用同一显示模式">
+      <span class="dm-label">显示方式</span>
+      <select v-model="displayMode" class="dm-select">
+        <option value="shaded">光照 / 材质</option>
+        <option value="wireframe">线框</option>
+        <option value="albedo">贴图（无光照）</option>
+        <option value="normals">法线 / 材质朝向</option>
+        <option value="vertices">顶点</option>
+        <option value="skeleton">骨骼</option>
+      </select>
+    </div>
     <div class="vp-stack">
       <div class="vp-label">处理前</div>
       <div class="vp-canvas-wrap">
         <div ref="sourceEl" class="vp-canvas" />
-        <div class="vp-hud">
+        <button
+          type="button"
+          class="hud-toggle"
+          :title="hudExpanded ? '折叠信息面板' : '展开信息面板'"
+          @click="hudExpanded = !hudExpanded"
+        >
+          {{ hudExpanded ? '▼ 信息' : '▲ 信息' }}
+        </button>
+        <div v-if="hudExpanded" class="vp-hud">
           <div class="hud-stats">
             三角面 {{ statsSource.triangles.toLocaleString() }} · 顶点 {{ statsSource.vertices.toLocaleString() }} · Mesh
             {{ statsSource.meshes }}
@@ -662,13 +772,18 @@ defineExpose({
             <span class="hud-lod-val">{{ (lodSource * 100).toFixed(0) }}%</span>
           </label>
         </div>
+        <div v-else class="vp-hud vp-hud-compact">
+          <span class="hud-mini-line">
+            △ {{ statsSource.triangles.toLocaleString() }} · 显存估 {{ fmtBytes(viewHudSource.vram) }}
+          </span>
+        </div>
       </div>
     </div>
     <div class="vp-stack">
       <div class="vp-label">处理后</div>
       <div class="vp-canvas-wrap">
         <div ref="resultEl" class="vp-canvas" />
-        <div class="vp-hud">
+        <div v-if="hudExpanded" class="vp-hud">
           <div class="hud-stats">
             三角面 {{ statsResult.triangles.toLocaleString() }} · 顶点 {{ statsResult.vertices.toLocaleString() }} · Mesh
             {{ statsResult.meshes }}
@@ -692,6 +807,11 @@ defineExpose({
             <span class="hud-lod-val">{{ (lodResult * 100).toFixed(0) }}%</span>
           </label>
         </div>
+        <div v-else class="vp-hud vp-hud-compact">
+          <span class="hud-mini-line">
+            △ {{ statsResult.triangles.toLocaleString() }} · 显存估 {{ fmtBytes(viewHudResult.vram) }}
+          </span>
+        </div>
       </div>
     </div>
   </div>
@@ -699,11 +819,69 @@ defineExpose({
 
 <style scoped>
 .dual-viewport {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   gap: 4px;
+}
+.display-mode-bar {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #d0d8e6;
+  background: rgba(15, 17, 21, 0.88);
+  border: 1px solid #3a4558;
+  border-radius: 6px;
+  pointer-events: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.dm-label {
+  color: #9aa3b0;
+  white-space: nowrap;
+}
+.dm-select {
+  min-width: 140px;
+  padding: 4px 8px;
+  border: 1px solid #4a5160;
+  border-radius: 4px;
+  background: #1b2029;
+  color: #e6ebf3;
+  font-size: 11px;
+}
+.hud-toggle {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  z-index: 4;
+  padding: 4px 8px;
+  font-size: 10px;
+  color: #b8c8e0;
+  background: rgba(15, 17, 21, 0.85);
+  border: 1px solid #3a4558;
+  border-radius: 4px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.hud-toggle:hover {
+  border-color: #5a6a82;
+  color: #e8eaed;
+}
+.vp-hud-compact {
+  padding: 4px 8px !important;
+  min-height: auto;
+}
+.hud-mini-line {
+  font-size: 10px;
+  color: #9fdfb8;
+  font-variant-numeric: tabular-nums;
 }
 .vp-stack {
   flex: 1 1 50%;

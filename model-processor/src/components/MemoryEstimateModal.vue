@@ -1,6 +1,9 @@
 <script setup>
 import { computed } from 'vue'
-import TexturePreviewCanvas from './TexturePreviewCanvas.vue'
+import TextureThumb2D from './TextureThumb2D.vue'
+
+/** 过多 WebGL 小预览会耗尽上下文；2D 缩略 + 数量上限 */
+const MAX_MOSAIC_THUMBS = 36
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -30,6 +33,8 @@ const bars = computed(() => {
 })
 
 const mosaic = computed(() => data.value?.textureMosaic || [])
+const mosaicShown = computed(() => mosaic.value.slice(0, MAX_MOSAIC_THUMBS))
+const mosaicRest = computed(() => Math.max(0, mosaic.value.length - MAX_MOSAIC_THUMBS))
 
 function fmtBytes(n) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -84,15 +89,29 @@ function fmtBytes(n) {
 
           <h3 class="mem-subh">贴图拼图（唯一贴图）</h3>
           <p v-if="!mosaic.length" class="mem-mosaic-empty">无贴图或无法收集。</p>
-          <div v-else class="mem-mosaic">
-            <div v-for="item in mosaic" :key="item.uuid" class="mosaic-cell" :title="item.label">
-              <TexturePreviewCanvas v-if="item.texture" :texture="item.texture" :size="56" />
-              <div class="mosaic-meta">
-                <span class="mosaic-bytes">{{ fmtBytes(item.bytes) }}</span>
-                <span class="mosaic-lbl">{{ item.slot || 'map' }}</span>
+          <template v-else>
+            <p class="mem-mosaic-note">
+              使用 2D 缩略图（避免大量 WebGL 上下文）；最多展示 {{ MAX_MOSAIC_THUMBS }} 张，其余仅列占用。
+            </p>
+            <div class="mem-mosaic">
+              <div v-for="item in mosaicShown" :key="item.uuid" class="mosaic-cell" :title="item.label">
+                <TextureThumb2D v-if="item.texture" :texture="item.texture" :size="56" />
+                <div v-else class="mosaic-fallback">—</div>
+                <div class="mosaic-meta">
+                  <span class="mosaic-bytes">{{ fmtBytes(item.bytes) }}</span>
+                  <span class="mosaic-lbl">{{ item.slot || 'map' }}</span>
+                </div>
               </div>
             </div>
-          </div>
+            <p v-if="mosaicRest > 0" class="mem-mosaic-more">
+              另有 {{ mosaicRest }} 张贴图未展开预览（仍计入上方合计与条形图）。
+            </p>
+            <ul v-if="mosaicRest > 0" class="mem-mosaic-list">
+              <li v-for="item in mosaic.slice(MAX_MOSAIC_THUMBS)" :key="item.uuid + '-rest'">
+                {{ item.label }} · {{ fmtBytes(item.bytes) }}
+              </li>
+            </ul>
+          </template>
         </div>
         <div v-else class="mem-empty">当前侧无模型或无法估算。</div>
       </div>
@@ -235,13 +254,44 @@ function fmtBytes(n) {
   font-size: 11px;
   color: #7a8494;
 }
+.mem-mosaic-note {
+  margin: 0 0 8px;
+  font-size: 10px;
+  color: #7a8494;
+  line-height: 1.4;
+}
+.mem-mosaic-more {
+  margin: 8px 0 4px;
+  font-size: 10px;
+  color: #9fdfb8;
+}
+.mem-mosaic-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 10px;
+  color: #8e97a6;
+  max-height: 120px;
+  overflow: auto;
+}
 .mem-mosaic {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
   gap: 8px;
-  max-height: 240px;
+  max-height: 280px;
   overflow: auto;
   padding: 4px 0;
+}
+.mosaic-fallback {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #4a5568;
+  border-radius: 4px;
+  background: #1a1d24;
+  color: #6b7a8e;
+  font-size: 11px;
 }
 .mosaic-cell {
   border: 1px solid #3a4558;
