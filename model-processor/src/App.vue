@@ -23,6 +23,7 @@ import ModelWorkbench from './components/ModelWorkbench.vue'
   --mp-range-thumb-hover: linear-gradient(180deg, #b8d7fc 0%, #6b9fe0 45%, #4f8fd4 100%);
   --mp-range-thumb-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   --mp-range-focus: rgba(90, 159, 212, 0.45);
+  --mp-range-track-top: #283240;
 }
 html,
 body,
@@ -39,14 +40,18 @@ input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  max-width: 260px;
+  max-width: 280px;
   min-width: 72px;
-  height: 22px;
+  height: 26px;
   margin: 0;
   padding: 0;
   background: transparent;
   cursor: pointer;
   accent-color: #5a9fd4;
+  transition: filter 0.15s ease;
+}
+input[type='range']:hover {
+  filter: brightness(1.06);
 }
 input[type='range']:focus {
   outline: none;
@@ -62,51 +67,76 @@ input[type='range']:disabled {
 }
 
 input[type='range']::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--mp-range-track);
+  height: 7px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--mp-range-track-top) 0%, var(--mp-range-track) 100%);
   border: 1px solid var(--mp-range-track-border);
-  box-shadow: inset 0 1px 2px var(--mp-range-track-inset);
+  box-shadow:
+    inset 0 1px 2px var(--mp-range-track-inset),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   margin-top: -5px;
   border-radius: 50%;
   background: var(--mp-range-thumb);
   border: 1px solid var(--mp-range-thumb-border);
-  box-shadow: var(--mp-range-thumb-shadow);
+  box-shadow:
+    var(--mp-range-thumb-shadow),
+    0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 input[type='range']:hover::-webkit-slider-thumb {
   background: var(--mp-range-thumb-hover);
   border-color: #c8ddfc;
+  transform: scale(1.04);
+}
+input[type='range']:active::-webkit-slider-thumb {
+  transform: scale(1.08);
+  box-shadow: 0 1px 6px rgba(90, 159, 212, 0.55);
 }
 
 input[type='range']::-moz-range-track {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--mp-range-track);
+  height: 7px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--mp-range-track-top) 0%, var(--mp-range-track) 100%);
   border: 1px solid var(--mp-range-track-border);
-  box-shadow: inset 0 1px 2px var(--mp-range-track-inset);
+  box-shadow:
+    inset 0 1px 2px var(--mp-range-track-inset),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 input[type='range']::-moz-range-progress {
-  height: 6px;
-  border-radius: 3px 0 0 3px;
+  height: 7px;
+  border-radius: 4px 0 0 4px;
   background: var(--mp-range-fill);
 }
 input[type='range']::-moz-range-thumb {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   border: 1px solid var(--mp-range-thumb-border);
   background: var(--mp-range-thumb);
-  box-shadow: var(--mp-range-thumb-shadow);
+  box-shadow:
+    var(--mp-range-thumb-shadow),
+    0 0 0 1px rgba(0, 0, 0, 0.35);
   cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 input[type='range']:hover::-moz-range-thumb {
   background: var(--mp-range-thumb-hover);
   border-color: #c8ddfc;
+  transform: scale(1.04);
+}
+input[type='range']:active::-moz-range-thumb {
+  transform: scale(1.08);
+}
+
+/* 弹窗等宽字段里的滑动条 */
+.modal-panel .field input[type='range'] {
+  flex: 1 1 160px;
+  max-width: min(320px, 100%);
 }
 </style>

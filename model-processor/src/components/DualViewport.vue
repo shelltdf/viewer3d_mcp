@@ -43,6 +43,13 @@ import {
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import {
+  applySsaoWorldScale,
+  patchSsaoCameraUniforms,
+  createAxisGizmoContext,
+  renderCornerAxisGizmo,
+} from '../utils/viewportPostFx.js'
 
 const props = defineProps({
   /** 是否显示「处理前」视口格子 */
@@ -168,6 +175,16 @@ let composerB = null
 let ssaoPassA = null
 /** @type {SSAOPass | null} */
 let ssaoPassB = null
+/** 右上角 XYZ(RGB) 轴辅助 */
+/** @type {ReturnType<typeof createAxisGizmoContext> | null} */
+let gizmoCtxA = null
+/** @type {ReturnType<typeof createAxisGizmoContext> | null} */
+let gizmoCtxB = null
+
+function retuneSsaoWorldScales() {
+  applySsaoWorldScale(ssaoPassA, sourceRoot)
+  applySsaoWorldScale(ssaoPassB, resultRoot)
+}
 
 function fmtBytes(n) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -308,8 +325,9 @@ function rebuildPostProcess() {
     composerA = new EffectComposer(rendererA)
     composerA.addPass(new RenderPass(sceneA, cameraA))
     ssaoPassA = new SSAOPass(sceneA, cameraA, wA, hA)
-    ssaoPassA.kernelRadius = 12
     composerA.addPass(ssaoPassA)
+    composerA.addPass(new OutputPass())
+    applySsaoWorldScale(ssaoPassA, sourceRoot)
     composerA.setPixelRatio(prA)
     composerA.setSize(wA, hA)
   }
@@ -318,8 +336,9 @@ function rebuildPostProcess() {
     composerB = new EffectComposer(rendererB)
     composerB.addPass(new RenderPass(sceneB, cameraB))
     ssaoPassB = new SSAOPass(sceneB, cameraB, wB, hB)
-    ssaoPassB.kernelRadius = 12
     composerB.addPass(ssaoPassB)
+    composerB.addPass(new OutputPass())
+    applySsaoWorldScale(ssaoPassB, resultRoot)
     composerB.setPixelRatio(prB)
     composerB.setSize(wB, hB)
   }
@@ -384,6 +403,24 @@ function createHelperGroundMesh(root, shadowOn) {
   return mesh
 }
 
+/** 无模型时仍可提供半径 1 的默认地面 */
+function createDefaultHelperGroundMesh(shadowOn) {
+  const geo = new THREE.CircleGeometry(1, 96)
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xcccccc,
+    roughness: 0.9,
+    metalness: 0,
+  })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.rotation.x = -Math.PI / 2
+  mesh.position.set(0, -0.002, 0)
+  mesh.receiveShadow = !!shadowOn
+  mesh.castShadow = false
+  mesh.userData.__workbenchHelperGround = true
+  mesh.name = 'WorkbenchHelperGround'
+  return mesh
+}
+
 function refreshHelperGrounds() {
   if (!sceneA || !sceneB) return
   removeWorkbenchHelperGrounds(sceneA)
@@ -391,10 +428,12 @@ function refreshHelperGrounds() {
   if (!props.helperGround) return
   const shA = renderSettingsSource.value.shadow === 'on'
   const shB = renderSettingsResult.value.shadow === 'on'
-  const gA = createHelperGroundMesh(sourceRoot, shA)
-  if (gA) sceneA.add(gA)
-  const gB = createHelperGroundMesh(resultRoot, shB)
-  if (gB) sceneB.add(gB)
+  let gA = createHelperGroundMesh(sourceRoot, shA)
+  if (!gA) gA = createDefaultHelperGroundMesh(shA)
+  sceneA.add(gA)
+  let gB = createHelperGroundMesh(resultRoot, shB)
+  if (!gB) gB = createDefaultHelperGroundMesh(shB)
+  sceneB.add(gB)
 }
 
 function syncMeshesUsingMaterial(material) {
@@ -509,6 +548,7 @@ function clearSource() {
   }
   vertexAttrNamesSource.value = []
   refreshHelperGrounds()
+  retuneSsaoWorldScales()
 }
 
 function clearResult() {
@@ -525,6 +565,7 @@ function clearResult() {
   statsResult.value = { meshes: 0, triangles: 0, vertices: 0 }
   vertexAttrNamesResult.value = []
   refreshHelperGrounds()
+  retuneSsaoWorldScales()
 }
 
 function applyObject3DToSource(object) {
@@ -548,6 +589,7 @@ function applyObject3DToSource(object) {
   })
   syncResultFromSource({ skipStatus: true })
   refreshHelperGrounds()
+  retuneSsaoWorldScales()
 }
 
 function applyGltfToSource(gltf) {
@@ -577,6 +619,7 @@ function applyGltfToSource(gltf) {
   })
   syncResultFromSource({ skipStatus: true })
   refreshHelperGrounds()
+  retuneSsaoWorldScales()
 }
 
 function urlModifierFromFileMap(map) {
@@ -734,6 +777,7 @@ function syncResultFromSource(opts = {}) {
     refreshVertexAttrNameLists()
     applyGlobalRendererSettings()
     refreshHelperGrounds()
+    retuneSsaoWorldScales()
     onResize()
   } catch (e) {
     emit('viewer-error', e?.message || String(e))
@@ -1065,10 +1109,14 @@ function animate() {
   }
   const useCompA = composerA && renderSettingsSource.value.ssao === 'on'
   const useCompB = composerB && renderSettingsResult.value.ssao === 'on'
+  if (ssaoPassA) patchSsaoCameraUniforms(ssaoPassA, cameraA)
+  if (ssaoPassB) patchSsaoCameraUniforms(ssaoPassB, cameraB)
   if (useCompA) composerA.render(delta)
   else if (rendererA && sceneA && cameraA) rendererA.render(sceneA, cameraA)
   if (useCompB) composerB.render(delta)
   else if (rendererB && sceneB && cameraB) rendererB.render(sceneB, cameraB)
+  if (props.showSource && rendererA && cameraA) renderCornerAxisGizmo(rendererA, cameraA, gizmoCtxA)
+  if (props.showResult && rendererB && cameraB) renderCornerAxisGizmo(rendererB, cameraB, gizmoCtxB)
 }
 
 function onResize() {
@@ -1169,6 +1217,8 @@ function mount() {
 
   window.addEventListener('resize', onResize)
   onResize()
+  gizmoCtxA = createAxisGizmoContext()
+  gizmoCtxB = createAxisGizmoContext()
   applyGlobalRendererSettings()
   animate()
   nextTick(() => setupResizeObservers())
@@ -1299,10 +1349,14 @@ defineExpose({
       <div class="vp-label-row">
         <div class="vp-label">处理前（只读快照 · 与处理后无引用关系）</div>
         <div class="vp-toolbar" title="仅影响左侧视口显示，不改源数据">
-          <select v-model="viewStateSource.geometryMode" class="vt-sel">
+          <select
+            v-model="viewStateSource.geometryMode"
+            class="vt-sel"
+            title="点云：对 Mesh/SkinnedMesh 用顶点位置绘制点，即显示顶点"
+          >
             <option value="solid">实体</option>
             <option value="wireframe">线框</option>
-            <option value="points">点云</option>
+            <option value="points">点云（顶点）</option>
           </select>
           <select v-model="viewStateSource.vertexAttrMode" class="vt-sel vt-sel-wide" title="将顶点缓冲区映射为着色；点云模式下不生效">
             <option value="off">顶点属性·关</option>
@@ -1411,10 +1465,14 @@ defineExpose({
       <div class="vp-label-row">
         <div class="vp-label">处理后（工具与合并仅作用本侧 · 深度克隆）</div>
         <div class="vp-toolbar" title="仅影响右侧视口显示">
-          <select v-model="viewStateResult.geometryMode" class="vt-sel">
+          <select
+            v-model="viewStateResult.geometryMode"
+            class="vt-sel"
+            title="点云：对 Mesh/SkinnedMesh 用顶点位置绘制点，即显示顶点"
+          >
             <option value="solid">实体</option>
             <option value="wireframe">线框</option>
-            <option value="points">点云</option>
+            <option value="points">点云（顶点）</option>
           </select>
           <select v-model="viewStateResult.vertexAttrMode" class="vt-sel vt-sel-wide" title="将顶点缓冲区映射为着色；点云模式下不生效">
             <option value="off">顶点属性·关</option>
@@ -1825,7 +1883,14 @@ defineExpose({
 }
 .hud-lod input[type='range'] {
   width: 88px;
+  max-width: 88px;
+  min-width: 88px;
+  height: 22px;
   vertical-align: middle;
+  filter: none;
+}
+.hud-lod input[type='range']::-webkit-slider-thumb {
+  margin-top: -5px;
 }
 .hud-lod-val {
   min-width: 34px;

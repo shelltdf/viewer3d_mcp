@@ -356,6 +356,7 @@ export function applyViewportViewState(root, state, ctx, scene) {
 
   applySceneLighting(scene, lightingMode)
 
+  // 点云：对 Mesh 使用其顶点缓冲绘制 Points（每顶点一个点，而非三角面片）
   if (geometryMode === 'points') {
     root.traverse((o) => {
       if (!o.isMesh && !o.isSkinnedMesh) return
