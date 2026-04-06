@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import DualViewport from './DualViewport.vue'
 import SceneOutliner from './SceneOutliner.vue'
 import PropertyInspector from './PropertyInspector.vue'
@@ -54,6 +54,8 @@ const dupSceneRevision = ref(0)
 /** 执行「重复资源合并」后的结果摘要弹窗 */
 const showMergeResultDialog = ref(false)
 const mergeResultLines = ref([])
+const showWeldResultDialog = ref(false)
+const weldResultLines = ref(/** @type {string[]} */ ([]))
 /** 双视口：可单独或同时显示「处理前 / 处理后」格子（至少保留一侧） */
 const showViewportSource = ref(true)
 const showViewportResult = ref(true)
@@ -140,6 +142,14 @@ const inspectorPayload = computed(() => {
 })
 
 const meshTargetRatio = ref(0.5)
+const meshTargetTriangleCount = ref(1)
+const meshTargetVertexRatio = ref(0.5)
+const meshTargetVertexCount = ref(1)
+/** @type {import('vue').Ref<'tri_ratio' | 'tri_count' | 'vert_ratio' | 'vert_count'>} */
+const meshSimplifyTargetMode = ref('tri_ratio')
+const meshStatsSnapshot = ref({ triangles: 0, vertices: 0 })
+const meshSimplifyProgress = ref({ visible: false, percent: 0, label: '' })
+const meshCompactVertices = ref(true)
 const meshPreserveBorder = ref(true)
 /** @type {import('vue').Ref<'qem' | 'cluster' | 'incremental' | 'attribute_aware'>} */
 const meshSimplifyAlgorithm = ref('qem')
@@ -154,6 +164,41 @@ const MESH_ALGO_KEYS = {
 const meshAlgorithmOptions = computed(() =>
   Object.entries(MESH_ALGO_KEYS).map(([value, key]) => ({ value, label: t(key) })),
 )
+
+const MESH_TARGET_MODE_OPTIONS = [
+  { value: 'tri_ratio', key: 'meshTargetModeTriRatio' },
+  { value: 'tri_count', key: 'meshTargetModeTriCount' },
+  { value: 'vert_ratio', key: 'meshTargetModeVertRatio' },
+  { value: 'vert_count', key: 'meshTargetModeVertCount' },
+]
+
+function refreshMeshStatsSnapshot() {
+  const s = dualRef.value?.getResultSimplifyStats?.() || { triangles: 0, vertices: 0 }
+  meshStatsSnapshot.value = s
+}
+
+function applyMeshSimplifyDefaultsForMode(m) {
+  const s = meshStatsSnapshot.value
+  const th = Math.max(1, Math.floor((s.triangles || 0) / 2))
+  const vh = Math.max(1, Math.floor((s.vertices || 0) / 2))
+  if (m === 'tri_ratio') meshTargetRatio.value = 0.5
+  if (m === 'tri_count') meshTargetTriangleCount.value = th
+  if (m === 'vert_ratio') meshTargetVertexRatio.value = 0.5
+  if (m === 'vert_count') meshTargetVertexCount.value = vh
+}
+
+watch(activeDialog, (v) => {
+  if (v === 'proc-mesh') {
+    nextTick(() => {
+      refreshMeshStatsSnapshot()
+      applyMeshSimplifyDefaultsForMode(meshSimplifyTargetMode.value)
+    })
+  }
+})
+
+watch(meshSimplifyTargetMode, (m) => {
+  applyMeshSimplifyDefaultsForMode(m)
+})
 const maxBones = ref(64)
 const maxInfluences = ref(4)
 const mergeTextures = ref(true)
@@ -284,6 +329,42 @@ function onDuplicateMerge(payload) {
 
 function closeMergeResultDialog() {
   showMergeResultDialog.value = false
+}
+
+function closeWeldResultDialog() {
+  showWeldResultDialog.value = false
+}
+
+function runWeldVertices() {
+  try {
+    const fn = dualRef.value?.weldResultVertices
+    if (typeof fn !== 'function') throw new Error('视口未就绪')
+    const r = fn()
+    dupSceneRevision.value += 1
+    const lines = []
+    if (r.meshes > 0) {
+      const key = r.welded > 0 ? 'weldResultStats' : 'weldResultNoMerge'
+      lines.push(
+        t(key)
+          .replace(/\{M\}/g, String(r.meshes))
+          .replace(/\{A\}/g, String(r.verticesBefore))
+          .replace(/\{B\}/g, String(r.verticesAfter))
+          .replace(/\{W\}/g, String(r.welded)),
+      )
+    } else {
+      lines.push(t('weldResultNoMeshes'))
+    }
+    for (const s of r.skipped || []) lines.push(s)
+    weldResultLines.value = lines
+    showWeldResultDialog.value = true
+    const st =
+      locale.value === 'zh'
+        ? `顶点焊接：合并 ${r.welded} 个顶点（${r.meshes} 个网格）`
+        : `Vertex weld: merged ${r.welded} vertices (${r.meshes} mesh(es))`
+    setStatus(st, 'ok')
+  } catch (e) {
+    setStatus(e?.message || String(e), 'error')
+  }
 }
 
 function onOutlineUpdated(payload) {
@@ -420,15 +501,53 @@ function meshAlgoShortLabel() {
   return key ? t(key) : meshSimplifyAlgorithm.value
 }
 
+function fmtMeshWarn(w) {
+  const map = {
+    tri_no_reduction: 'meshWarnTriNone',
+    tri_under_target_ratio: 'meshWarnTriUnderRatio',
+    tri_above_cap: 'meshWarnTriAboveCap',
+    tri_goal_noop: 'meshWarnTriGoalNoop',
+    tri_above_count_goal: 'meshWarnTriAboveCountGoal',
+    compact_skipped_morph: 'meshWarnCompactMorph',
+    compact_failed: 'meshWarnCompactFail',
+    vert_above_count: 'meshWarnVertAboveCount',
+    vert_above_ratio: 'meshWarnVertAboveRatio',
+  }
+  const tk = map[w.key]
+  if (!tk) return `${w.meshLabel ? `${w.meshLabel}: ` : ''}${w.key}`
+  let s = t(tk)
+  if (w.a !== undefined) s = s.replace(/\{A\}/g, String(w.a))
+  if (w.b !== undefined) s = s.replace(/\{B\}/g, String(w.b))
+  if (w.c !== undefined) s = s.replace(/\{C\}/g, String(w.c))
+  return w.meshLabel ? `${w.meshLabel}: ${s}` : s
+}
+
 async function runMeshSimplify() {
+  meshSimplifyProgress.value = { visible: true, percent: 0, label: t('meshProgressPrep') }
   setStatus(`meshoptimizer WASM · ${meshAlgoShortLabel()}…`, 'loading')
   try {
     const fn = dualRef.value?.simplifyResultMeshes
     if (typeof fn !== 'function') throw new Error('视口未就绪')
-    const r = await fn({
-      ratio: meshTargetRatio.value,
+    const mode = meshSimplifyTargetMode.value
+    /** @type {Record<string, unknown>} */
+    const opts = {
+      targetMode: mode,
+      compactVertices: meshCompactVertices.value,
       algorithm: meshSimplifyAlgorithm.value,
       lockBorder: meshPreserveBorder.value,
+    }
+    if (mode === 'tri_ratio') opts.ratio = meshTargetRatio.value
+    if (mode === 'tri_count') opts.targetTriangleCount = meshTargetTriangleCount.value
+    if (mode === 'vert_ratio') opts.targetVertexRatio = meshTargetVertexRatio.value
+    if (mode === 'vert_count') opts.targetVertexCount = meshTargetVertexCount.value
+
+    const r = await fn(opts, (p) => {
+      const pct = p.total > 0 ? Math.min(100, Math.round((100 * p.done) / p.total)) : 0
+      const sub =
+        p.label && p.label.length > 0
+          ? t('meshProgressMesh').replace(/\{NAME\}/g, p.label)
+          : t('meshProgressPrep')
+      meshSimplifyProgress.value = { visible: true, percent: pct, label: sub }
     })
     const skipMsg =
       r.skipped?.length > 0
@@ -436,14 +555,25 @@ async function runMeshSimplify() {
           ? `；跳过 ${r.skipped.length} 项`
           : `; skipped ${r.skipped.length}`
         : ''
-    setStatus(
+    const base =
       locale.value === 'zh'
         ? `meshoptimizer：已处理 ${r.meshes} 个网格，三角面 ${r.triBefore} → ${r.triAfter}${skipMsg}`
-        : `meshoptimizer: ${r.meshes} mesh(es), triangles ${r.triBefore} → ${r.triAfter}${skipMsg}`,
-      'ok',
-    )
+        : `meshoptimizer: ${r.meshes} mesh(es), triangles ${r.triBefore} → ${r.triAfter}${skipMsg}`
+
+    const warnLines = (r.warnings || []).map(fmtMeshWarn).filter(Boolean)
+    for (const line of warnLines) logPush(line, 'ok')
+
+    const warnShort =
+      warnLines.length > 0
+        ? locale.value === 'zh'
+          ? ` · 提示 ${warnLines.length} 条（见日志）`
+          : ` · ${warnLines.length} hint(s) in log`
+        : ''
+    setStatus(base + warnShort, 'ok')
   } catch (e) {
     setStatus(e?.message || String(e), 'error')
+  } finally {
+    meshSimplifyProgress.value = { visible: false, percent: 0, label: '' }
   }
   activeDialog.value = ''
 }
@@ -527,6 +657,7 @@ onUnmounted(() => {
           {{ t('menuProcess') }}
         </button>
         <div class="menu-pop menu-pop-wide" :class="{ 'is-open': openMenuId === 'process' }">
+          <button class="menu-item" type="button" @click="runWeldVertices(); closeMenu()">{{ t('menuWeldVertices') }}</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-mesh'; closeMenu()">{{ t('dlgMesh') }}…</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-skeleton'; closeMenu()">{{ t('dlgSkeleton') }}…</button>
           <button class="menu-item" type="button" @click="activeDialog = 'proc-atlas'; closeMenu()">{{ t('dlgAtlas') }}…</button>
@@ -773,11 +904,40 @@ onUnmounted(() => {
               </select>
             </label>
             <p class="modal-hint sub-hint">{{ t('meshFinePrint') }}</p>
-            <label class="field">
+            <fieldset class="mesh-target-fieldset">
+              <legend class="mesh-target-legend">{{ t('meshTargetModeLabel') }}</legend>
+              <div class="mesh-target-grid">
+                <label v-for="opt in MESH_TARGET_MODE_OPTIONS" :key="opt.value" class="mesh-target-option">
+                  <input v-model="meshSimplifyTargetMode" type="radio" name="mesh-simplify-target" :value="opt.value" />
+                  <span class="mesh-target-option-text">{{ t(opt.key) }}</span>
+                </label>
+              </div>
+            </fieldset>
+            <label v-if="meshSimplifyTargetMode === 'tri_ratio'" class="field">
               <span>{{ t('meshTargetRatio') }}</span>
               <input v-model.number="meshTargetRatio" type="range" min="0.05" max="1" step="0.05" />
               <span class="mono">{{ meshTargetRatio.toFixed(2) }}</span>
             </label>
+            <label v-if="meshSimplifyTargetMode === 'tri_count'" class="field">
+              <span>{{ t('meshTriCountLabel') }}</span>
+              <input v-model.number="meshTargetTriangleCount" class="num" type="number" min="1" step="1" />
+            </label>
+            <p v-if="meshSimplifyTargetMode === 'tri_count'" class="modal-hint sub-hint">{{ t('meshTriCountHint') }}</p>
+            <label v-if="meshSimplifyTargetMode === 'vert_ratio'" class="field">
+              <span>{{ t('meshVertRatioLabel') }}</span>
+              <input v-model.number="meshTargetVertexRatio" type="range" min="0.05" max="1" step="0.05" />
+              <span class="mono">{{ meshTargetVertexRatio.toFixed(2) }}</span>
+            </label>
+            <label v-if="meshSimplifyTargetMode === 'vert_count'" class="field">
+              <span>{{ t('meshVertCountLabel') }}</span>
+              <input v-model.number="meshTargetVertexCount" class="num" type="number" min="1" step="1" />
+            </label>
+            <p v-if="meshSimplifyTargetMode === 'vert_ratio' || meshSimplifyTargetMode === 'vert_count'" class="modal-hint sub-hint">
+              {{ t('meshVertHint') }}
+            </p>
+            <label class="check"
+              ><input v-model="meshCompactVertices" type="checkbox" /> {{ t('meshCompactLabel') }}</label
+            >
             <label class="check"><input v-model="meshPreserveBorder" type="checkbox" /> {{ t('meshPreserveBorder') }}</label>
             <div class="btn-row">
               <button type="button" class="tool-btn" @click="runMeshSimplify">{{ t('meshRun') }}</button>
@@ -1062,6 +1222,27 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <div
+      v-if="showWeldResultDialog"
+      class="modal-backdrop merge-result-backdrop"
+      @click.self="closeWeldResultDialog"
+    >
+      <div class="modal-panel merge-result-panel" role="alertdialog" aria-labelledby="weld-result-title" aria-modal="true">
+        <header class="modal-head merge-result-head">
+          <h2 id="weld-result-title">{{ t('dlgWeldTitle') }}</h2>
+          <button type="button" class="modal-close" aria-label="关闭" @click="closeWeldResultDialog">×</button>
+        </header>
+        <div class="modal-body merge-result-body">
+          <ul class="merge-result-list">
+            <li v-for="(line, idx) in weldResultLines" :key="idx">{{ line }}</li>
+          </ul>
+        </div>
+        <div class="merge-result-actions">
+          <button type="button" class="tool-btn accent" @click="closeWeldResultDialog">{{ t('dlgMergeOk') }}</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showLogModal" class="modal-backdrop" @click.self="showLogModal = false">
       <div class="modal-panel log-modal" role="dialog">
         <header class="modal-head">
@@ -1073,6 +1254,22 @@ onUnmounted(() => {
         </div>
         <div class="log-actions">
           <button type="button" class="tool-btn" @click="copyLogText">{{ t('logCopy') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="meshSimplifyProgress.visible"
+      class="mesh-simplify-progress-backdrop"
+      aria-live="polite"
+    >
+      <div class="mesh-simplify-progress-card">
+        <p class="mesh-simplify-progress-msg">{{ meshSimplifyProgress.label }}</p>
+        <div class="mesh-simplify-progress-track">
+          <div
+            class="mesh-simplify-progress-fill"
+            :style="{ width: meshSimplifyProgress.percent + '%' }"
+          />
         </div>
       </div>
     </div>
@@ -1292,6 +1489,104 @@ onUnmounted(() => {
 .merge-result-backdrop {
   z-index: 400;
   background: rgba(0, 0, 0, 0.62);
+}
+.mesh-simplify-progress-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 380;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: all;
+}
+.mesh-simplify-progress-card {
+  min-width: min(360px, 90vw);
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: linear-gradient(#2c3138, #252a32);
+  border: 1px solid #4a5568;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+.mesh-simplify-progress-msg {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #d4dce8;
+}
+.mesh-simplify-progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #1a1d24;
+  overflow: hidden;
+}
+.mesh-simplify-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #3d8f6a, #4a9f7a);
+  transition: width 0.15s ease-out;
+}
+.workbench[data-shell-theme='light'] .mesh-simplify-progress-card {
+  background: linear-gradient(#fafbfc, #eef0f4);
+  border-color: #aeb6c4;
+}
+.workbench[data-shell-theme='light'] .mesh-simplify-progress-msg {
+  color: #1e293b;
+}
+.workbench[data-shell-theme='light'] .mesh-simplify-progress-track {
+  background: #dde3ec;
+}
+.mesh-target-fieldset {
+  margin: 0 0 12px;
+  padding: 10px 12px 12px;
+  border: 1px solid #4a5160;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+}
+.workbench[data-shell-theme='light'] .mesh-target-fieldset {
+  border-color: #cfd6e0;
+  background: rgba(255, 255, 255, 0.45);
+}
+.mesh-target-legend {
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9aa3b0;
+  letter-spacing: 0.03em;
+}
+.workbench[data-shell-theme='light'] .mesh-target-legend {
+  color: #64748b;
+}
+.mesh-target-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin-top: 6px;
+}
+@media (max-width: 420px) {
+  .mesh-target-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.mesh-target-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #d4dce8;
+}
+.workbench[data-shell-theme='light'] .mesh-target-option {
+  color: #1e293b;
+}
+.mesh-target-option input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.mesh-target-option-text {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .merge-result-body {
   padding-bottom: 8px;

@@ -8,6 +8,7 @@ import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { buildRichOutline } from '../utils/outline.js'
 import {
   computeMeshStats,
@@ -1310,10 +1311,104 @@ function applyDuplicateMerges(payload) {
 }
 
 /**
- * 对「处理后」场景中所有 Mesh / SkinnedMesh 的 BufferGeometry 做 meshoptimizer WASM 简化。
- * @param {{ ratio: number, algorithm: string, lockBorder: boolean }} opts
+ * 对「处理后」场景中 Mesh / SkinnedMesh 做顶点焊接（容差内合并属性相同的顶点，见 BufferGeometryUtils.mergeVertices）。
+ * @returns {{ meshes: number, verticesBefore: number, verticesAfter: number, welded: number, skipped: string[] }}
  */
-async function simplifyResultMeshes(opts) {
+function weldResultVertices() {
+  if (!resultRoot) throw new Error('请先加载模型并确保存在「处理后」场景')
+
+  let meshes = 0
+  let verticesBefore = 0
+  let verticesAfter = 0
+  let welded = 0
+  const skipped = []
+  let anyGeometryReplaced = false
+
+  const candidates = []
+  resultRoot.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const g = obj.geometry
+    if (!g?.isBufferGeometry) return
+    candidates.push({ obj, g })
+  })
+
+  for (const { obj, g } of candidates) {
+    const meshLabel = obj.name || obj.uuid?.slice(0, 8) || 'mesh'
+    const pos = g.getAttribute('position')
+    if (!pos) {
+      skipped.push(`${meshLabel}: 无 position`)
+      continue
+    }
+    if (Object.values(g.attributes).some((a) => a.isInterleavedBufferAttribute)) {
+      skipped.push(`${meshLabel}: 交错顶点缓冲（未处理）`)
+      continue
+    }
+
+    const vb = pos.count
+    let newG
+    try {
+      newG = mergeVertices(g, 1e-4)
+    } catch (e) {
+      skipped.push(`${meshLabel}: ${e?.message || String(e)}`)
+      continue
+    }
+
+    const va = newG.getAttribute('position').count
+    verticesBefore += vb
+    verticesAfter += va
+    welded += vb - va
+    meshes += 1
+
+    if (vb > va) {
+      anyGeometryReplaced = true
+      g.dispose()
+      obj.geometry = newG
+    } else {
+      newG.dispose()
+    }
+  }
+
+  if (anyGeometryReplaced) {
+    afterResultGeometryMutation()
+    refreshOutline('result')
+    refreshVertexAttrNameLists()
+    emit('result-updated', {
+      outline: buildRichOutline(resultRoot, { clips: resultClips }),
+      animations: resultClips.length,
+      clips: resultClips,
+    })
+  }
+
+  return { meshes, verticesBefore, verticesAfter, welded, skipped }
+}
+
+/** 统计「处理后」场景可遍历 Mesh 的三角面与 position 顶点数（与简化候选范围一致）。 */
+function getResultSimplifyStats() {
+  let triangles = 0
+  let vertices = 0
+  if (!resultRoot) return { triangles: 0, vertices: 0 }
+  resultRoot.traverse((obj) => {
+    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const g = obj.geometry
+    if (!g?.isBufferGeometry) return
+    const pos = g.getAttribute('position')
+    if (!pos) return
+    const idx = g.index
+    triangles += idx ? idx.count / 3 : pos.count / 3
+    vertices += pos.count
+  })
+  return {
+    triangles: Math.max(0, Math.floor(triangles)),
+    vertices: Math.max(0, Math.floor(vertices)),
+  }
+}
+
+/**
+ * 对「处理后」场景中所有 Mesh / SkinnedMesh 的 BufferGeometry 做 meshoptimizer WASM 简化。
+ * @param {object} opts 见 applyMeshoptSimplifyToGeometry
+ * @param {(p: { done: number, total: number, label: string }) => void} [onProgress]
+ */
+async function simplifyResultMeshes(opts, onProgress) {
   await meshoptSimplifierReady()
   if (!isMeshoptSimplifySupported()) {
     throw new Error('当前环境不支持 meshoptimizer WASM（需启用 WebAssembly）')
@@ -1321,6 +1416,8 @@ async function simplifyResultMeshes(opts) {
   if (!resultRoot) throw new Error('请先加载模型并确保存在「处理后」场景')
 
   const skipped = []
+  /** @type {{ key: string, a?: number | string, b?: number | string, c?: number | string, meshLabel?: string }[]} */
+  const warnings = []
   let meshes = 0
   let triBefore = 0
   let triAfter = 0
@@ -1333,19 +1430,25 @@ async function simplifyResultMeshes(opts) {
     candidates.push({ obj, g })
   })
 
+  const total = candidates.length
+  let done = 0
+  onProgress?.({ done: 0, total, label: '' })
+
   for (const { obj, g } of candidates) {
+    const meshLabel = obj.name || obj.uuid?.slice(0, 8) || 'mesh'
+    onProgress?.({ done, total, label: meshLabel })
     try {
       if (g.groups && g.groups.length > 1) {
-        skipped.push(`${obj.name || obj.uuid}: 多材质 groups（未处理）`)
+        skipped.push(`${meshLabel}: 多材质 groups（未处理）`)
         continue
       }
       if (g.morphAttributes && Object.keys(g.morphAttributes).length > 0) {
-        skipped.push(`${obj.name || obj.uuid}: 含 morph 目标（未处理）`)
+        skipped.push(`${meshLabel}: 含 morph 目标（未处理）`)
         continue
       }
       const pos = g.getAttribute('position')
       if (!pos) {
-        skipped.push(`${obj.name || obj.uuid}: 无 position`)
+        skipped.push(`${meshLabel}: 无 position`)
         continue
       }
       const idx = g.index
@@ -1354,9 +1457,14 @@ async function simplifyResultMeshes(opts) {
       triBefore += tb
       triAfter += r.trianglesAfter
       meshes++
+      for (const w of r.warnings || []) {
+        warnings.push({ ...w, meshLabel })
+      }
     } catch (e) {
-      skipped.push(`${obj.name || obj.uuid}: ${e?.message || String(e)}`)
+      skipped.push(`${meshLabel}: ${e?.message || String(e)}`)
     }
+    done += 1
+    onProgress?.({ done, total, label: meshLabel })
   }
 
   afterResultGeometryMutation()
@@ -1368,7 +1476,7 @@ async function simplifyResultMeshes(opts) {
     clips: resultClips,
   })
 
-  return { meshes, triBefore, triAfter, skipped }
+  return { meshes, triBefore, triAfter, skipped, warnings }
 }
 
 defineExpose({
@@ -1386,6 +1494,8 @@ defineExpose({
   syncMeshesUsingMaterial,
   refreshOutline,
   simplifyResultMeshes,
+  getResultSimplifyStats,
+  weldResultVertices,
   linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)
