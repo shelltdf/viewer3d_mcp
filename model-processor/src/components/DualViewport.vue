@@ -700,7 +700,8 @@ function applyDuplicateMerges(payload) {
   for (const op of ops) {
     if (op.kind === 'texture') mergeTextureGroup(root, op.textures, op.keepUuid)
     else if (op.kind === 'material') mergeMaterialGroup(root, op.materials, op.keepUuid)
-    else if (op.kind === 'mesh') mergeMeshInstances(op.keepUuid, op.items)
+    else if (op.kind === 'object' || op.kind === 'mesh')
+      mergeMeshInstances(op.keepUuid, op.items)
   }
   refreshOutline(panel)
   emit('status', '已合并所选重复资源')

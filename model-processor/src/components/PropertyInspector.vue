@@ -2,7 +2,18 @@
 import { computed, ref, watch } from 'vue'
 import TexturePreviewCanvas from './TexturePreviewCanvas.vue'
 import MaterialPreviewBall from './MaterialPreviewBall.vue'
-import { getTextureMemoryBreakdown } from '../utils/textureMemory.js'
+import {
+  getTextureMemoryBreakdown,
+  getTextureSamplingRows,
+  getTextureCompressionFormatTable,
+} from '../utils/textureMemory.js'
+import { getMeshGeometryCompressionEstimates } from '../utils/meshCompressionEstimate.js'
+import {
+  getObject3DContentHashDisplay,
+  getMaterialContentHashDisplay,
+  getTextureContentHashDisplay,
+  getClipContentHashDisplay,
+} from '../utils/selectionContentHash.js'
 
 const props = defineProps({
   /** @type {any} */
@@ -28,11 +39,13 @@ const MAP_KEYS = [
 ]
 
 const textureChannel = ref('rgba')
+const matAutoRotate = ref(false)
 
 watch(
   () => props.payload,
   () => {
     textureChannel.value = 'rgba'
+    matAutoRotate.value = false
   },
   { deep: true },
 )
@@ -67,6 +80,35 @@ const textureMem = computed(() => {
   const p = props.payload
   if (p?.kind !== 'texture' || !p.texture) return null
   return getTextureMemoryBreakdown(p.texture)
+})
+
+const textureSampling = computed(() => {
+  const p = props.payload
+  if (p?.kind !== 'texture' || !p.texture) return []
+  return getTextureSamplingRows(p.texture).rows
+})
+
+const textureCompressTable = computed(() => {
+  const p = props.payload
+  if (p?.kind !== 'texture' || !p.texture) return []
+  return getTextureCompressionFormatTable(p.texture)
+})
+
+const meshGeoCompress = computed(() => {
+  const p = props.payload
+  const g = p?.object?.geometry
+  if (!g?.isBufferGeometry) return []
+  return getMeshGeometryCompressionEstimates(g)
+})
+
+const selectionContentHash = computed(() => {
+  const p = props.payload
+  if (!p || p.kind === 'empty' || p.kind === 'section') return '—'
+  if (p.kind === 'object3d' && p.object) return getObject3DContentHashDisplay(p.object)
+  if (p.kind === 'material' && p.material) return getMaterialContentHashDisplay(p.material)
+  if (p.kind === 'texture' && p.texture) return getTextureContentHashDisplay(p.texture)
+  if (p.kind === 'clip' && p.clip) return getClipContentHashDisplay(p.clip)
+  return '—'
 })
 
 function materialScalarParams(m) {
@@ -136,7 +178,14 @@ function onDecompressTexture() {
         <dt>名称</dt>
         <dd>{{ payload.object.name || '（未命名）' }}</dd>
         <dt>UUID</dt>
-        <dd class="mono">{{ payload.object.uuid }}</dd>
+        <dd class="mono uuid-line">{{ payload.object.uuid }}</dd>
+        <dt>哈希值</dt>
+        <dd
+          class="mono content-hash-dd"
+          title="仅几何、材质参数与贴图内容等；不含对象名称与 UUID"
+        >
+          {{ selectionContentHash }}
+        </dd>
         <dt>可见</dt>
         <dd>{{ payload.object.visible ? '是' : '否' }}</dd>
       </dl>
@@ -198,6 +247,29 @@ function onDecompressTexture() {
         <p class="hint tiny">BC7 类为块压缩粗估；实际格式以资源与 GPU 为准。</p>
       </template>
 
+      <template v-if="meshGeoCompress.length && (payload.object.isMesh || payload.object.isSkinnedMesh)">
+        <h4 class="sub-title">几何压缩体积粗估（Draco / Meshopt 等）</h4>
+        <p class="hint tiny">以下为经验占位，非真实编码器输出；便于对比数量级。</p>
+        <div class="mesh-table-wrap">
+          <table class="mesh-table compress-est-table">
+            <thead>
+              <tr>
+                <th>方式</th>
+                <th>粗估体积</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, idx) in meshGeoCompress" :key="idx">
+                <td>{{ row.label }}</td>
+                <td class="mono">{{ fmtBytes(row.bytes) }}</td>
+                <td class="compress-note">{{ row.note }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
       <template v-if="payload.object.isMesh || payload.object.isSkinnedMesh">
         <h4 class="sub-title">本节点（若为 Mesh）</h4>
         <dl class="kv">
@@ -218,9 +290,13 @@ function onDecompressTexture() {
     </template>
 
     <template v-else-if="payload.kind === 'material' && payload.material">
+      <label class="check mat-rot-toggle">
+        <input v-model="matAutoRotate" type="checkbox" />
+        自动旋转预览
+      </label>
       <div class="preview-block" title="双击最大化预览" @dblclick="onDblMat">
-        <MaterialPreviewBall :material="payload.material" :size="168" />
-        <span class="preview-tip">双击放大</span>
+        <MaterialPreviewBall :material="payload.material" :size="168" :auto-rotate="matAutoRotate" />
+        <span class="preview-tip">拖动旋转球体 · 勾选上项可自动旋转 · 双击放大</span>
       </div>
       <dl class="kv">
         <dt>类型</dt>
@@ -228,7 +304,14 @@ function onDecompressTexture() {
         <dt>名称</dt>
         <dd>{{ payload.material.name || '（未命名）' }}</dd>
         <dt>UUID</dt>
-        <dd class="mono">{{ payload.material.uuid }}</dd>
+        <dd class="mono uuid-line">{{ payload.material.uuid }}</dd>
+        <dt>哈希值</dt>
+        <dd
+          class="mono content-hash-dd"
+          title="仅可序列化参数与各槽贴图内容；不含材质名称与 UUID"
+        >
+          {{ selectionContentHash }}
+        </dd>
       </dl>
 
       <h4 class="sub-title">贴图槽</h4>
@@ -282,6 +365,41 @@ function onDecompressTexture() {
           块压缩（BC7 类）粗估：<strong>{{ fmtBytes(textureMem.compressedBC7Like) }}</strong>
         </p>
       </div>
+
+      <h4 class="sub-title">采样状态（GPU 采样器语义）</h4>
+      <dl v-if="textureSampling.length" class="kv kv-tight">
+        <template v-for="(row, idx) in textureSampling" :key="idx">
+          <dt>{{ row.label }}</dt>
+          <dd class="mono">{{ row.value }}</dd>
+        </template>
+      </dl>
+      <p v-else class="hint tiny">无法读取采样字段</p>
+
+      <h4 class="sub-title">常见压缩格式 · 文件 / 内存 / 显存（粗估）</h4>
+      <p class="hint tiny">立方体贴图已乘 6；「文件」指磁盘或传输载荷，「内存」指解码/暂存，「显存」指 GPU 可采样占用。</p>
+      <div v-if="textureCompressTable.length" class="compress-table-wrap">
+        <table class="compress-table">
+          <thead>
+            <tr>
+              <th>格式</th>
+              <th>文件</th>
+              <th>内存</th>
+              <th>显存</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, idx) in textureCompressTable" :key="idx">
+              <td>{{ row.label }}</td>
+              <td class="mono">{{ fmtBytes(row.fileBytes) }}</td>
+              <td class="mono">{{ fmtBytes(row.ramBytes) }}</td>
+              <td class="mono">{{ fmtBytes(row.vramBytes) }}</td>
+              <td class="compress-note">{{ row.note }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <div class="btn-inline">
         <button type="button" class="mini-btn" @click="onCompressTexture">压缩</button>
         <button type="button" class="mini-btn" @click="onDecompressTexture">解压</button>
@@ -291,7 +409,14 @@ function onDecompressTexture() {
         <dt>名称</dt>
         <dd>{{ payload.texture.name || '（未命名）' }}</dd>
         <dt>UUID</dt>
-        <dd class="mono">{{ payload.texture.uuid }}</dd>
+        <dd class="mono uuid-line">{{ payload.texture.uuid }}</dd>
+        <dt>哈希值</dt>
+        <dd
+          class="mono content-hash-dd"
+          title="像素/块数据与采样等属性；不含贴图名称与 UUID"
+        >
+          {{ selectionContentHash }}
+        </dd>
         <dt>尺寸</dt>
         <dd>
           <template v-if="payload.texture.image && payload.texture.image.width">
@@ -312,6 +437,15 @@ function onDecompressTexture() {
       <dl class="kv">
         <dt>名称</dt>
         <dd>{{ payload.clip.name || '（未命名）' }}</dd>
+        <dt>UUID</dt>
+        <dd class="mono uuid-line">{{ payload.clip.uuid || '—' }}</dd>
+        <dt>哈希值</dt>
+        <dd
+          class="mono content-hash-dd"
+          title="时长、混合模式与轨道关键帧数据；不含片段名、轨道名与 UUID"
+        >
+          {{ selectionContentHash }}
+        </dd>
         <dt>时长 (s)</dt>
         <dd>{{ fmt(payload.clip.duration) }}</dd>
         <dt>轨道数</dt>
@@ -532,6 +666,53 @@ function onDecompressTexture() {
   color: #d0d8e6;
   word-break: break-all;
   font-family: ui-monospace, monospace;
+  font-size: 9px;
+}
+.mat-rot-toggle {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #aeb6c4;
+}
+.kv-tight {
+  margin-bottom: 12px;
+  font-size: 10px;
+}
+.compress-table-wrap,
+.compress-est-table {
+  margin-bottom: 12px;
+}
+.compress-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9px;
+}
+.compress-table th,
+.compress-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid #2e3440;
+  text-align: left;
+  vertical-align: top;
+}
+.compress-table th {
+  background: #2a3038;
+  color: #9aa3b0;
+}
+.compress-note {
+  color: #7a8494;
+  line-height: 1.35;
+}
+.uuid-line {
+  word-break: break-all;
+  color: #d0d8e6;
+}
+.content-hash-dd {
+  font-size: one;
+  line-height: 1.35;
+  word-break: break-all;
+  color: #9fdfb8;
+  font-variant-numeric: tabular-nums;
+}
+.compress-est-table .compress-note {
   font-size: 9px;
 }
 </style>

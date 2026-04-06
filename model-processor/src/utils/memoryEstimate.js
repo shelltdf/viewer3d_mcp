@@ -126,6 +126,6 @@ export function estimateSceneMemory(root) {
     textureCount: textureUuids.size,
     breakdown,
     note:
-      '估算含对齐余量；压缩贴图按尺寸与格式粗算，实际 GPU 分配与驱动/ mips 有关。',
+      '此为浏览器解压后常驻显存/上传缓冲的粗算：分辨率×通道字节×（可选 mipmap 约×1.33），与磁盘 .jpg/.png/.basis 等压缩文件体积无关（5MB 文件解码成 4K RGBA 可能数十 MB）。含对齐余量；HalfFloat/Float 等按 8 字节/纹素估算。实际以 GPU 驱动分配为准。',
   }
 }

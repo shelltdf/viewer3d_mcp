@@ -1,3 +1,6 @@
+import { textureContentIdentityKey, refineTextureDuplicateClusters } from './textureContentHash.js'
+import { contentHashDualFromString } from './hashString.js'
+
 const MAP_KEYS = [
   'map',
   'lightMap',
@@ -14,94 +17,191 @@ const MAP_KEYS = [
   'gradientMap',
 ]
 
-/**
- * 贴图分组键：优先同一 image 对象；否则用尺寸+名称+格式粗分组（可合并为共享贴图对象）。
- * @param {import('three').Texture} t
- */
-export function textureMergeKey(t) {
-  if (!t?.isTexture) return `invalid:${t?.uuid || '?'}`
-  const img = t.image
-  if (img && typeof img === 'object') {
-    if (img.width && img.height) {
-      const id =
-        img.uuid ||
-        (typeof img.src === 'string' ? img.src : '') ||
-        (typeof img.currentSrc === 'string' ? img.currentSrc : '') ||
-        ''
-      return `img:${img.width}x${img.height}:${id || 'ref:' + (img.constructor?.name || 'Image')}`
-    }
+/** 浮点顶点属性比对公差：effectiveTol = ABS + REL * max(1, |v|) 后量化 */
+export const MESH_GEOMETRY_ABS_EPS = 1e-5
+export const MESH_GEOMETRY_REL_EPS = 1e-5
+
+function tolQuant(v) {
+  const t = MESH_GEOMETRY_ABS_EPS + MESH_GEOMETRY_REL_EPS * Math.max(1, Math.abs(v))
+  return Math.round(v / t)
+}
+
+function fnv1a32Buffer(buffer, byteOffset, byteLength) {
+  const u8 = new Uint8Array(buffer, byteOffset, byteLength)
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < u8.length; i++) {
+    h ^= u8[i]
+    h = Math.imul(h, 16777619) >>> 0
   }
-  const w = img?.width ?? 0
-  const h = img?.height ?? 0
-  return `tex:${w}x${h}:${t.name || ''}:${t.format ?? ''}:${t.uuid?.slice?.(0, 8) ?? ''}`
+  return h >>> 0
+}
+
+/** 整数索引等：精确哈希 */
+function attrPartExact(attr) {
+  if (!attr?.array) return 'null'
+  const arr = attr.array
+  const hash = fnv1a32Buffer(arr.buffer, arr.byteOffset, arr.byteLength)
+  return `${attr.itemSize}:${attr.normalized ? 1 : 0}:${attr.count}:${hash.toString(16)}`
+}
+
+/** Float32/64：公差量化后再哈希，避免细微浮点差导致无法识别重复 */
+function attrTolerancePart(attr) {
+  if (!attr?.array) return 'null'
+  const arr = attr.array
+  const ctor = arr.constructor
+  if (ctor === Float32Array || ctor === Float64Array) {
+    let h = 2166136261 >>> 0
+    for (let i = 0; i < arr.length; i++) {
+      const q = tolQuant(arr[i])
+      h ^= q & 0xff
+      h = Math.imul(h, 16777619) >>> 0
+      h ^= (q >>> 8) & 0xff
+      h = Math.imul(h, 16777619) >>> 0
+      h ^= (q >>> 16) & 0xff
+      h = Math.imul(h, 16777619) >>> 0
+      h ^= (q >>> 24) & 0xff
+      h = Math.imul(h, 16777619) >>> 0
+    }
+    return `${attr.itemSize}:${attr.normalized ? 1 : 0}:${attr.count}:${h.toString(16)}`
+  }
+  return attrPartExact(attr)
 }
 
 /**
- * 材质可合并：类型与关键标量/颜色一致，且各槽位贴图 uuid 一致。
+ * 几何内容指纹（公差版）：与 UUID/名称无关。
+ * @param {import('three').BufferGeometry | null | undefined} geo
+ */
+export function geometryContentKey(geo) {
+  if (!geo?.isBufferGeometry) return 'invalid'
+  const parts = []
+  if (geo.index) parts.push(`ix:${attrPartExact(geo.index)}`)
+  const names = Object.keys(geo.attributes).sort()
+  for (const n of names) {
+    parts.push(`a:${n}:${attrTolerancePart(geo.attributes[n])}`)
+  }
+  if (geo.morphAttributes && Object.keys(geo.morphAttributes).length) {
+    for (const name of Object.keys(geo.morphAttributes).sort()) {
+      const arr = geo.morphAttributes[name]
+      for (let i = 0; i < arr.length; i++) {
+        parts.push(`m:${name}:${i}:${attrTolerancePart(arr[i])}`)
+      }
+    }
+  }
+  if (geo.groups?.length) {
+    parts.push(`g:${geo.groups.map((x) => `${x.start}/${x.count}/${x.materialIndex ?? 0}`).join(';')}`)
+  }
+  const dr = geo.drawRange
+  if (dr && (dr.start !== 0 || dr.count !== Infinity)) {
+    parts.push(`dr:${dr.start},${dr.count}`)
+  }
+  return parts.join('|')
+}
+
+function fingerprint32(str) {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
+/**
+ * 材质可合并：参数一致（浮点保留 6 位）+ 各槽贴图「内容身份键」（像素/块哈希或同源 URL，与采样无关）。
  * @param {import('three').Material} m
  */
 export function materialMergeKey(m) {
   if (!m) return 'null'
-  const pick = (k) => {
+  const skip = new Set(['uuid', 'name', 'id', 'version', 'userData'])
+  const entries = []
+  for (const k of Object.keys(m).sort()) {
+    if (skip.has(k)) continue
     const v = m[k]
-    if (v == null) return null
-    if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return v
-    if (v?.isColor) return v.getHexString?.() ?? String(v)
-    if (v?.isVector2) return `${v.x},${v.y}`
-    if (v?.isVector3) return `${v.x},${v.y},${v.z}`
-    return null
+    if (typeof v === 'function') continue
+    if (k === 'program') continue
+    if (v?.isTexture) {
+      entries.push([k, v ? textureContentIdentityKey(v) : ''])
+      continue
+    }
+    if (typeof v === 'number') {
+      const nv = Number.isInteger(v) ? v : Math.round(v * 1e6) / 1e6
+      entries.push([k, nv])
+      continue
+    }
+    if (v == null || typeof v === 'boolean' || typeof v === 'string') {
+      entries.push([k, v])
+      continue
+    }
+    if (v?.isColor) {
+      const hx =
+        typeof v.getHexString === 'function'
+          ? v.getHexString()
+          : Number(v.getHex?.() ?? 0).toString(16).padStart(6, '0')
+      entries.push([k, `#${hx}`])
+    } else if (v?.isVector2)
+      entries.push([k, `v2:${Math.round(v.x * 1e6) / 1e6},${Math.round(v.y * 1e6) / 1e6}`])
+    else if (v?.isVector3)
+      entries.push([
+        k,
+        `v3:${Math.round(v.x * 1e6) / 1e6},${Math.round(v.y * 1e6) / 1e6},${Math.round(v.z * 1e6) / 1e6}`,
+      ])
+    else if (v?.isVector4)
+      entries.push([
+        k,
+        `v4:${Math.round(v.x * 1e6) / 1e6},${Math.round(v.y * 1e6) / 1e6},${Math.round(v.z * 1e6) / 1e6},${Math.round(v.w * 1e6) / 1e6}`,
+      ])
+    else if (v?.isMatrix3) entries.push([k, `m3:${v.elements.join(',')}`])
+    else if (v?.isMatrix4) entries.push([k, `m4:${v.elements.join(',')}`])
   }
-  const texIds = {}
-  for (const k of MAP_KEYS) {
-    const tex = m[k]
-    texIds[k] = tex?.isTexture ? tex.uuid : ''
+  return `${m.type}|${JSON.stringify(entries)}`
+}
+
+/**
+ * 与属性面板 `getObject3DContentHashDisplay` 使用同一规则（须保持同步）。
+ * @param {import('three').Object3D} obj
+ */
+function object3dInspectorHashKey(obj) {
+  if (!obj) return ''
+  if ((obj.isMesh || obj.isSkinnedMesh) && obj.geometry?.isBufferGeometry) {
+    const gk = geometryContentKey(obj.geometry)
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+    const mk = mats.map((m) => (m ? materialMergeKey(m) : 'null')).join('||')
+    return contentHashDualFromString(`${gk}@@${mk}`)
   }
-  const keys = [
-    m.type,
-    pick('opacity'),
-    pick('transparent'),
-    pick('side'),
-    pick('depthTest'),
-    pick('depthWrite'),
-    pick('metalness'),
-    pick('roughness'),
-    pick('color'),
-    pick('emissive'),
-    JSON.stringify(texIds),
-  ]
-  return keys.join('|')
+  const e = obj.matrix.elements.map((x) => Math.round(x * 1e6) / 1e6).join(',')
+  const sig = `${obj.type}|vis:${obj.visible ? 1 : 0}|ly:${obj.layers?.mask ?? 0}|fc:${obj.frustumCulled ? 1 : 0}|ro:${obj.renderOrder}|m:${e}`
+  return contentHashDualFromString(sig)
 }
 
 /**
  * @param {import('three').Object3D | null} root
- * @returns {{
- *   textureGroups: Array<{ id: string, reason: string, items: Array<{ uuid: string, label: string, slot?: string, meshName?: string }>, textures: import('three').Texture[] }>,
- *   materialGroups: Array<{ id: string, reason: string, items: Array<{ uuid: string, label: string }>, materials: import('three').Material[] }>,
- *   meshGroups: Array<{ id: string, reason: string, items: Array<{ uuid: string, label: string, object: import('three').Object3D }>, geometryUuid: string }>,
- * }}
  */
 export function analyzeDuplicateResources(root) {
   const textureBuckets = new Map()
   const materialBuckets = new Map()
-  const geometryBuckets = new Map()
+  const objectHashBuckets = new Map()
+  /** 场景内 Mesh 实际引用的唯一 Texture / Material（按 UUID），用于向用户解释「有 N 张贴图但仍无可合并分组」。 */
+  const uniqueTextureUuids = new Set()
+  const uniqueMaterialUuids = new Set()
+  let meshDrawableCount = 0
 
   root?.traverse((obj) => {
-    if (!obj.isMesh && !obj.isSkinnedMesh) return
+    const hk = object3dInspectorHashKey(obj)
+    if (!hk) return
+    if (!objectHashBuckets.has(hk)) objectHashBuckets.set(hk, [])
+    objectHashBuckets.get(hk).push({
+      uuid: obj.uuid,
+      label: obj.name || obj.type || obj.uuid.slice(0, 8),
+      object: obj,
+    })
 
-    const geo = obj.geometry
-    if (geo) {
-      const gid = geo.uuid
-      if (!geometryBuckets.has(gid)) geometryBuckets.set(gid, [])
-      geometryBuckets.get(gid).push({
-        uuid: obj.uuid,
-        label: obj.name || obj.type || obj.uuid.slice(0, 8),
-        object: obj,
-      })
-    }
+    if ((!obj.isMesh && !obj.isSkinnedMesh) || !obj.geometry) return
 
+    meshDrawableCount += 1
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
     mats.forEach((mat, slotIndex) => {
       if (!mat) return
+      uniqueMaterialUuids.add(mat.uuid)
       const mk = materialMergeKey(mat)
       if (!materialBuckets.has(mk)) materialBuckets.set(mk, [])
       materialBuckets.get(mk).push({
@@ -115,7 +215,8 @@ export function analyzeDuplicateResources(root) {
       for (const k of MAP_KEYS) {
         const tex = mat[k]
         if (!tex?.isTexture) continue
-        const tk = textureMergeKey(tex)
+        uniqueTextureUuids.add(tex.uuid)
+        const tk = textureContentIdentityKey(tex)
         if (!textureBuckets.has(tk)) textureBuckets.set(tk, [])
         textureBuckets.get(tk).push({
           uuid: tex.uuid,
@@ -131,22 +232,34 @@ export function analyzeDuplicateResources(root) {
   const textureGroups = []
   let ti = 0
   for (const [, arr] of textureBuckets) {
-    if (arr.length < 2) continue
-    const textures = [...new Map(arr.map((x) => [x.texture.uuid, x.texture])).values()]
-    if (textures.length < 2) continue
-    const id = `tex-${ti++}`
-    textureGroups.push({
-      id,
-      reason:
-        '多个 Texture 对象引用相同或等价的图像数据/尺寸，可合并为单一贴图并统一材质引用，减少 GPU 绑定与序列化冗余。',
-      items: arr.map((x) => ({
-        uuid: x.uuid,
-        label: x.label,
-        slot: x.slot,
-        meshName: x.meshName,
-      })),
-      textures,
-    })
+    const texturesFromBucket = [...new Map(arr.map((x) => [x.texture.uuid, x.texture])).values()]
+    if (texturesFromBucket.length < 2) continue
+
+    const clusters = refineTextureDuplicateClusters(texturesFromBucket)
+    for (const refined of clusters) {
+      if (!refined || refined.textures.length < 2) continue
+
+      const keepSet = new Set(refined.textures.map((t) => t.uuid))
+      const items = arr.filter((x) => keepSet.has(x.texture.uuid))
+      const textures = refined.textures
+
+      const id = `tex-${ti++}`
+      const pixelVerified = refined.pixelVerified
+      textureGroups.push({
+        id,
+        pixelVerified,
+        reason: pixelVerified
+          ? '像素/压缩块数据：内容哈希一致且已做逐字节核对；分组与名称、UUID、采样器状态无关。可合并为单一 Texture。'
+          : '同源 URL 或未读到像素时仅按资源键聚合；若可合并请确认无误（未做逐字节核对）。',
+        items: items.map((x) => ({
+          uuid: x.uuid,
+          label: x.label,
+          slot: x.slot,
+          meshName: x.meshName,
+        })),
+        textures,
+      })
+    }
   }
 
   const materialGroups = []
@@ -161,7 +274,8 @@ export function analyzeDuplicateResources(root) {
     const id = `mat-${mi++}`
     materialGroups.push({
       id,
-      reason: '材质参数与各贴图槽 uuid 一致，可合并为同一 Material 实例并复用。',
+      reason:
+        '材质参数一致（浮点六位对齐）、各槽贴图「内容身份」一致（像素哈希/同源 URL）；与材质名、UUID、贴图采样设置无关。',
       items: [...uniq.values()].map((x) => ({
         uuid: x.uuid,
         label: `${x.label}（${x.meshName || 'mesh'} · ${x.slot}）`,
@@ -170,16 +284,17 @@ export function analyzeDuplicateResources(root) {
     })
   }
 
-  const meshGroups = []
+  const objectGroups = []
   let gi = 0
-  for (const [geoUuid, items] of geometryBuckets) {
+  for (const [hk, items] of objectHashBuckets) {
     if (items.length < 2) continue
-    const id = `mesh-${gi++}`
-    meshGroups.push({
+    const id = `obj-${gi++}`
+    objectGroups.push({
       id,
-      geometryUuid: geoUuid,
+      displayHash: hk,
+      fingerprint: fingerprint32(hk.replace(/\s/g, '')),
       reason:
-        '多个 Mesh 共享同一 BufferGeometry（相同 geometry.uuid）。可删除多余节点仅保留一个，或后续做 GPU Instancing（合并绘制调用）。',
+        '与右侧属性面板「哈希值」规则一致：Mesh 为几何（公差指纹）+ 材质内容键；其它节点为变换与可见性等标志。合并将移除多余节点（含其子树）；请先确认结构等价。',
       items: items.map((x) => ({
         uuid: x.uuid,
         label: x.label,
@@ -188,7 +303,17 @@ export function analyzeDuplicateResources(root) {
     })
   }
 
-  return { textureGroups, materialGroups, meshGroups }
+  return {
+    textureGroups,
+    materialGroups,
+    meshGroups: objectGroups,
+    objectGroups,
+    sceneResourceCounts: {
+      meshes: meshDrawableCount,
+      uniqueTextures: uniqueTextureUuids.size,
+      uniqueMaterials: uniqueMaterialUuids.size,
+    },
+  }
 }
 
 /**
@@ -264,7 +389,6 @@ export function mergeMaterialGroup(root, materials, keepUuid) {
 }
 
 /**
- * 删除除 keep 外的重复 Mesh 节点（共享几何）。不 dispose 几何；材质仅当无引用时由调用方后续处理。
  * @param {string} keepUuid
  * @param {Array<{ object: import('three').Object3D }>} items
  */
@@ -273,7 +397,6 @@ export function mergeMeshInstances(keepUuid, items) {
   const remove = items.filter((x) => x.object.uuid !== keep.uuid).map((x) => x.object)
   for (const obj of remove) {
     obj.parent?.remove(obj)
-    /** 不 dispose 材质：可能与保留 Mesh 共享；几何与保留 Mesh 相同，亦不 dispose */
   }
   return { removed: remove.length }
 }

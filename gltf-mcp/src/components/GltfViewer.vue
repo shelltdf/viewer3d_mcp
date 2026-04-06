@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
+import { getObject3DContentHashDisplay } from '../utils/selectionHashBridge.js'
 
 const emit = defineEmits(['viewer-error', 'viewer-state'])
 const props = defineProps({
@@ -782,6 +783,7 @@ function updateSelectedInfo() {
     name: obj.name || '(unnamed)',
     type: obj.type,
     uuid: obj.uuid,
+    contentHash: getObject3DContentHashDisplay(obj),
     parentName: obj.parent?.name || obj.parent?.type || '-',
     visible: obj.visible !== false,
     position: obj.position ? { x: obj.position.x, y: obj.position.y, z: obj.position.z } : null,
@@ -2094,6 +2096,13 @@ defineExpose({ loadUrl, loadFile, loadFiles, resetCamera, setTransformTool, setV
           </span>
         </div>
         <div class="attr-row uuid"><span class="k">UUID</span><span class="v">{{ selectedInfo.uuid }}</span></div>
+        <div
+          class="attr-row content-hash-row"
+          title="仅几何、材质与贴图等内容；不含名称与 UUID（与 model-processor 同源算法）"
+        >
+          <span class="k">哈希值</span>
+          <span class="v mono hash-val">{{ selectedInfo.contentHash }}</span>
+        </div>
       </div>
       <div class="dock-empty" v-else-if="!dockCollapsed">未选中对象</div>
       <div v-if="!dockCollapsed" class="dock-body env-panel">
@@ -2422,6 +2431,12 @@ defineExpose({ loadUrl, loadFile, loadFiles, resetCamera, setTransformTool, setV
 .attr-row.uuid .v {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+}
+.attr-row.content-hash-row .hash-val {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: #9fdfb8;
+  line-height: 1.4;
 }
 .outline-panel {
   width: 260px;

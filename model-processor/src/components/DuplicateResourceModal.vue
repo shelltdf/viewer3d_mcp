@@ -32,7 +32,8 @@ function resetSelectionsFromAnalysis() {
   for (const g of a?.materialGroups || []) {
     sm[g.id] = { on: false, keep: g.materials[0]?.uuid || '' }
   }
-  for (const g of a?.meshGroups || []) {
+  const sceneGroupsInit = a?.objectGroups ?? a?.meshGroups ?? []
+  for (const g of sceneGroupsInit) {
     sh[g.id] = { on: false, keep: g.items[0]?.uuid || '' }
   }
   selectedTexture.value = st
@@ -68,10 +69,11 @@ function onMerge() {
       g.materials.find((m) => m.uuid === selectedMaterial.value[g.id]?.keep) || g.materials[0]
     ops.push({ kind: 'material', groupId: g.id, keepUuid: keep.uuid, materials: g.materials })
   }
-  for (const g of a.meshGroups || []) {
+  const sceneGroups = a.objectGroups ?? a.meshGroups ?? []
+  for (const g of sceneGroups) {
     if (!selectedMesh.value[g.id]?.on) continue
     const keepUuid = selectedMesh.value[g.id]?.keep || g.items[0]?.uuid
-    ops.push({ kind: 'mesh', groupId: g.id, keepUuid, items: g.items })
+    ops.push({ kind: 'object', groupId: g.id, keepUuid, items: g.items })
   }
 
   if (!ops.length) return
@@ -122,6 +124,10 @@ function onMerge() {
                 <span class="grp-n">· {{ g.textures.length }} 张不同 Texture</span>
               </label>
               <p class="grp-reason">{{ g.reason }}</p>
+              <p class="grp-verify">
+                <span v-if="g.pixelVerified" class="tag-pix">已逐字节核对像素/块数据</span>
+                <span v-else class="tag-src">未读像素（同源 URL 或退化为弱键）</span>
+              </p>
               <div class="grp-keep">
                 <span>保留</span>
                 <select v-model="selectedTexture[g.id].keep" class="dup-sel">
@@ -161,16 +167,18 @@ function onMerge() {
             </div>
           </section>
 
-          <section v-if="analysis.meshGroups.length" class="dup-sec">
-            <h3>Mesh 节点（{{ analysis.meshGroups.length }}）</h3>
+          <section v-if="(analysis.objectGroups || analysis.meshGroups || []).length" class="dup-sec">
+            <h3>
+              场景节点（{{ (analysis.objectGroups || analysis.meshGroups || []).length }}）· 与属性面板哈希一致
+            </h3>
             <p class="dup-warn">
-              共享同一几何的多个节点：合并将从场景移除多余对象，不自动释放仍被其他 Mesh 使用的材质。
+              合并将从场景移除多余对象（含其子节点）；若仅为空组或变换相同但子树不同，删除可能导致丢层次，请先确认。
             </p>
-            <div v-for="g in analysis.meshGroups" :key="g.id" class="grp">
+            <div v-for="g in analysis.objectGroups || analysis.meshGroups" :key="g.id" class="grp">
               <label class="grp-head">
                 <input v-model="selectedMesh[g.id].on" type="checkbox" />
                 <span>分组 {{ g.id }}</span>
-                <span class="grp-n">· geometry {{ g.geometryUuid.slice(0, 8) }}… · {{ g.items.length }} 个节点</span>
+                <span class="grp-n">· {{ g.displayHash || '指纹 ' + g.fingerprint }} · {{ g.items.length }} 个节点</span>
               </label>
               <p class="grp-reason">{{ g.reason }}</p>
               <div class="grp-keep">
@@ -184,8 +192,30 @@ function onMerge() {
             </div>
           </section>
 
-          <div v-if="!analysis.textureGroups.length && !analysis.materialGroups.length && !analysis.meshGroups.length" class="dup-empty">
-            当前场景未发现可合并的重复项（或尚未加载模型）。
+          <div
+            v-if="
+              !analysis.textureGroups.length &&
+              !analysis.materialGroups.length &&
+              !(analysis.objectGroups || analysis.meshGroups || []).length
+            "
+            class="dup-empty"
+          >
+            <template v-if="analysis.sceneResourceCounts">
+              <p>
+                本场景（可渲染 Mesh）约引用
+                <strong>{{ analysis.sceneResourceCounts.uniqueTextures }}</strong> 张唯一贴图、
+                <strong>{{ analysis.sceneResourceCounts.uniqueMaterials }}</strong> 份唯一材质；当前
+                <strong>没有「内容等价、可合并为更少资源」</strong>的分组（每种须至少 2 份<strong>字节级或规则判定相同</strong>才会列出）。
+              </p>
+              <p v-if="analysis.sceneResourceCounts.uniqueTextures >= 2">
+                贴图数量多≠一定有重复：若每张图像素/压缩块或身份键都不同，就不会出现贴图分组；属性面板上的「贴图哈希」含采样设置，与弹窗内桶键也不完全相同。
+              </p>
+            </template>
+            <template v-else>
+              <p>
+                当前未发现可合并的贴图/材质/场景节点（或未加载模型）。属性里贴图哈希与去重桶算法不同，请以本弹窗贴图分组为准。
+              </p>
+            </template>
           </div>
 
           <div class="dup-actions">
@@ -313,6 +343,16 @@ function onMerge() {
   font-size: 10px;
   color: #7a8a9e;
   line-height: 1.4;
+}
+.grp-verify {
+  margin: 4px 0 6px 22px;
+  font-size: 10px;
+}
+.tag-pix {
+  color: #9fdfb8;
+}
+.tag-src {
+  color: #e0c08a;
 }
 .grp-keep {
   display: flex;
