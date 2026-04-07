@@ -22,6 +22,10 @@ import {
   syncStandardMaterialsForNormalMap,
 } from '../utils/meshTangentMaterialSync.js'
 import { applyTextureColorSpaceForMaterialSlot } from '../utils/materialTextureSlots.js'
+import { useUiLocale } from '../composables/useUiLocale.js'
+import { createMaterialByTypeName, MESH_MATERIAL_TYPE_OPTIONS } from '../utils/materialReplace.js'
+
+const { t } = useUiLocale()
 
 const props = defineProps({
   /** @type {any} */
@@ -67,18 +71,25 @@ const MAP_KEYS = [
 
 const textureChannel = ref('rgba')
 const matAutoRotate = ref(false)
+/** 材质标量就地修改时强制重算可编辑行（payload 引用不变） */
+const materialParamsTick = ref(0)
 const slotCtx = ref(null)
 const slotFileInputRef = ref(null)
 const pendingSlotKey = ref('')
 const slotImportLoading = ref(false)
 
 watch(
-  () => props.payload,
+  () => [
+    props.payload?.kind,
+    props.payload?.object?.uuid,
+    props.payload?.material?.uuid,
+    props.payload?.texture?.uuid,
+  ],
   () => {
     textureChannel.value = 'rgba'
     matAutoRotate.value = false
+    meshMatEditTick.value++
   },
-  { deep: true },
 )
 
 /** 同对象上直接改 BufferGeometry 时触发列表重算 */
@@ -193,6 +204,277 @@ function materialScalarParams(m) {
     }
   }
   return rows.sort((a, b) => a.key.localeCompare(b.key))
+}
+
+const MAT_PARAM_SKIP = new Set([
+  ...MAP_KEYS,
+  'uuid',
+  'version',
+  'id',
+  'type',
+  'userData',
+  'defines',
+  'name',
+  'blending',
+  'blendEquation',
+  'blendSrc',
+  'blendDst',
+  'blendEquationAlpha',
+  'blendSrcAlpha',
+  'blendDstAlpha',
+  'blendColor',
+  'blendAlpha',
+  'premultipliedAlpha',
+  'clipping',
+  'clipIntersection',
+  'clipShadows',
+  'shadowSide',
+  'toneMapped',
+  'dithering',
+  'clippingPlanes',
+])
+
+function materialNumberMeta(key) {
+  if (['roughness', 'metalness', 'opacity', 'reflectivity', 'refractionRatio', 'sheen', 'sheenRoughness'].includes(key)) {
+    return { min: 0, max: 1, step: 0.01 }
+  }
+  if (key === 'shininess') return { min: 0, max: 1000, step: 1 }
+  if (key === 'bumpScale' || key === 'displacementScale') return { min: -20, max: 20, step: 0.01 }
+  if (key === 'displacementBias') return { min: -2, max: 2, step: 0.001 }
+  if (
+    ['emissiveIntensity', 'envMapIntensity', 'lightMapIntensity', 'aoMapIntensity', 'transmission', 'thickness'].includes(
+      key,
+    )
+  ) {
+    return { min: 0, max: 20, step: 0.05 }
+  }
+  if (key === 'ior') return { min: 1, max: 2.5, step: 0.01 }
+  if (['clearcoat', 'clearcoatRoughness', 'iridescence', 'iridescenceIOR', 'anisotropy'].includes(key)) {
+    return { min: 0, max: 1, step: 0.01 }
+  }
+  if (key === 'wireframeLinewidth') return { min: 0, max: 20, step: 0.5 }
+  return { min: -1e6, max: 1e6, step: 0.001 }
+}
+
+function buildMaterialEditableRows(m) {
+  if (!m || m.isShaderMaterial || m.isRawShaderMaterial) return []
+  const rows = []
+  for (const key of Object.keys(m).sort()) {
+    if (MAT_PARAM_SKIP.has(key)) continue
+    const v = m[key]
+    if (typeof v === 'function') continue
+    if (v?.isTexture) continue
+    if (v && typeof v === 'object' && !v.isColor && !v.isVector2 && !v.isVector3) continue
+    if (key === 'side' && typeof v === 'number') {
+      rows.push({ key, kind: 'side', value: v })
+    } else if (typeof v === 'boolean') {
+      rows.push({ key, kind: 'bool', value: v })
+    } else if (typeof v === 'number') {
+      rows.push({ key, kind: 'number', value: v, ...materialNumberMeta(key) })
+    } else if (v?.isColor) {
+      rows.push({ key, kind: 'color', value: '#' + v.getHexString() })
+    } else if (v?.isVector2) {
+      rows.push({ key, kind: 'vec2', x: v.x, y: v.y })
+    } else if (v?.isVector3) {
+      rows.push({ key, kind: 'vec3', x: v.x, y: v.y, z: v.z })
+    }
+  }
+  return rows
+}
+
+const materialEditableRows = computed(() => {
+  materialParamsTick.value
+  const m = props.payload?.kind === 'material' ? props.payload.material : null
+  return buildMaterialEditableRows(m)
+})
+
+const materialTypeSelectOptions = MESH_MATERIAL_TYPE_OPTIONS
+
+/** 选中 Mesh 时编辑材质槽后强制刷新本段 UI */
+const meshMatEditTick = ref(0)
+
+const QUICK_MAT_NUM_KEYS = [
+  'roughness',
+  'metalness',
+  'shininess',
+  'opacity',
+  'emissiveIntensity',
+  'envMapIntensity',
+  'lightMapIntensity',
+  'aoMapIntensity',
+]
+
+const meshSlotsDetail = computed(() => {
+  meshMatEditTick.value
+  const o = props.payload?.object
+  if (!o || (!o.isMesh && !o.isSkinnedMesh)) return []
+  const mats = Array.isArray(o.material) ? o.material : [o.material]
+  const out = []
+  for (let slot = 0; slot < mats.length; slot++) {
+    const mat = mats[slot]
+    if (!mat) continue
+    const quickRows = []
+    for (const key of QUICK_MAT_NUM_KEYS) {
+      if (typeof mat[key] === 'number') {
+        quickRows.push({ key, kind: 'number', value: mat[key], ...materialNumberMeta(key) })
+      }
+    }
+    out.push({ slot, mat, quickRows })
+  }
+  return out
+})
+
+function onMeshSlotMaterialTypeChange(slot, ev) {
+  const newType = ev.target?.value
+  if (isReadOnlyContext.value || !newType) return
+  const o = props.payload?.object
+  if (!o?.isMesh && !o?.isSkinnedMesh) return
+  const mats = Array.isArray(o.material) ? o.material : [o.material]
+  const m = mats[slot]
+  if (!m || newType === m.type) return
+  if (isShaderLikeMaterial(m)) return
+  const neu = createMaterialByTypeName(newType, m)
+  if (!neu) return
+  emit('action', {
+    type: 'material-replaced',
+    oldMaterial: m,
+    newMaterial: neu,
+    panel: props.selectionPanel,
+  })
+  meshMatEditTick.value++
+}
+
+function onMeshSlotOpenInOutline(mat) {
+  if (!mat?.uuid) return
+  emit('action', {
+    type: 'select-outline-material',
+    materialUuid: mat.uuid,
+    panel: props.selectionPanel,
+  })
+}
+
+function onMeshSlotQuickNumber(slot, key, ev) {
+  if (isReadOnlyContext.value) return
+  const o = props.payload?.object
+  if (!o?.isMesh && !o?.isSkinnedMesh) return
+  const mats = Array.isArray(o.material) ? o.material : [o.material]
+  const m = mats[slot]
+  if (!m || typeof m[key] !== 'number') return
+  const n = parseFloat(ev.target.value)
+  if (Number.isNaN(n)) return
+  m[key] = n
+  m.needsUpdate = true
+  meshMatEditTick.value++
+  emit('action', { type: 'material-updated', material: m, panel: props.selectionPanel })
+}
+
+function onMeshSlotNameInput(slot, ev) {
+  if (isReadOnlyContext.value) return
+  const o = props.payload?.object
+  if (!o?.isMesh && !o?.isSkinnedMesh) return
+  const mats = Array.isArray(o.material) ? o.material : [o.material]
+  const m = mats[slot]
+  if (!m) return
+  m.name = ev.target?.value ?? ''
+  m.needsUpdate = true
+  meshMatEditTick.value++
+  emit('action', { type: 'material-updated', material: m, panel: props.selectionPanel })
+}
+
+function isShaderLikeMaterial(m) {
+  return !!(m && (m.isShaderMaterial || m.isRawShaderMaterial))
+}
+
+function emitMaterialUpdated() {
+  const m = props.payload?.material
+  if (!m) return
+  m.needsUpdate = true
+  materialParamsTick.value++
+  emit('action', { type: 'material-updated', material: m, panel: props.selectionPanel })
+}
+
+function onMaterialTypeChange(ev) {
+  const newType = ev.target?.value
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value || !newType || newType === m.type) return
+  const neu = createMaterialByTypeName(newType, m)
+  if (!neu) return
+  emit('action', {
+    type: 'material-replaced',
+    oldMaterial: m,
+    newMaterial: neu,
+    panel: props.selectionPanel,
+  })
+}
+
+function onMatNameInput(ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  m.name = ev.target.value
+  emitMaterialUpdated()
+}
+
+function onMatNumberKey(key, ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  const n = parseFloat(ev.target.value)
+  if (Number.isNaN(n)) return
+  m[key] = n
+  emitMaterialUpdated()
+}
+
+function onMatBoolKey(key, ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  m[key] = !!ev.target.checked
+  emitMaterialUpdated()
+}
+
+function onMatColorKey(key, ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  const c = m[key]
+  if (!c?.isColor) return
+  try {
+    c.set(ev.target.value)
+  } catch {
+    /* ignore */
+  }
+  emitMaterialUpdated()
+}
+
+function onMatVec2Key(key, comp, ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  const v = m[key]
+  if (!v?.isVector2) return
+  const n = parseFloat(ev.target.value)
+  if (Number.isNaN(n)) return
+  if (comp === 'x') v.x = n
+  else v.y = n
+  emitMaterialUpdated()
+}
+
+function onMatVec3Key(key, comp, ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  const v = m[key]
+  if (!v?.isVector3) return
+  const n = parseFloat(ev.target.value)
+  if (Number.isNaN(n)) return
+  if (comp === 'x') v.x = n
+  else if (comp === 'y') v.y = n
+  else v.z = n
+  emitMaterialUpdated()
+}
+
+function onMatSideChange(ev) {
+  const m = props.payload?.material
+  if (!m || isReadOnlyContext.value) return
+  const v = parseInt(ev.target.value, 10)
+  if (Number.isNaN(v)) return
+  m.side = v
+  emitMaterialUpdated()
 }
 
 function onDblTex() {
@@ -534,6 +816,81 @@ function onOpenUvWindow() {
         <p class="hint tiny">BC7 类为块压缩粗估；实际格式以资源与 GPU 为准。</p>
       </template>
 
+      <template v-if="meshSlotsDetail.length && (payload.object.isMesh || payload.object.isSkinnedMesh)">
+        <h4 class="sub-title">{{ t('meshMatEditSection') }}</h4>
+        <p class="hint tiny">{{ t('meshMatEditHint') }}</p>
+        <div class="mesh-mat-slots">
+          <div v-for="row in meshSlotsDetail" :key="row.slot + '-' + row.mat.uuid" class="mesh-mat-slot">
+            <div class="mesh-mat-slot-head">
+              <span class="mesh-mat-slot-label">槽 {{ row.slot }} · {{ row.mat.type }}</span>
+              <button
+                type="button"
+                class="mini-btn mini-btn--primary mesh-mat-outline-btn"
+                @click="onMeshSlotOpenInOutline(row.mat)"
+              >
+                {{ t('matOpenInOutline') }}
+              </button>
+            </div>
+            <dl class="kv kv-tight">
+              <dt>{{ t('matTypeLabel') }}</dt>
+              <dd v-if="isReadOnlyContext">{{ row.mat.type }}</dd>
+              <dd v-else-if="isShaderLikeMaterial(row.mat)" class="hint tiny">{{ t('matShaderNoEdit') }}</dd>
+              <dd v-else>
+                <select
+                  class="mat-edit-sel mat-edit-sel--block"
+                  :value="row.mat.type"
+                  @change="onMeshSlotMaterialTypeChange(row.slot, $event)"
+                >
+                  <option
+                    v-if="!materialTypeSelectOptions.some((o) => o.value === row.mat.type)"
+                    :value="row.mat.type"
+                    disabled
+                  >
+                    {{ row.mat.type }}
+                  </option>
+                  <option v-for="opt in materialTypeSelectOptions" :key="opt.value" :value="opt.value">
+                    {{ t(opt.labelKey) }}
+                  </option>
+                </select>
+              </dd>
+              <dt>{{ t('matNameLabel') }}</dt>
+              <dd v-if="isReadOnlyContext">{{ row.mat.name || '—' }}</dd>
+              <dd v-else>
+                <input
+                  class="mat-edit-txt"
+                  type="text"
+                  :value="row.mat.name"
+                  @change="onMeshSlotNameInput(row.slot, $event)"
+                />
+              </dd>
+            </dl>
+            <template v-if="!isReadOnlyContext && !isShaderLikeMaterial(row.mat)">
+              <div v-if="row.quickRows.length" class="mesh-mat-quick">
+                <span class="mesh-mat-quick-title">{{ t('matParamsSectionTitle') }}（常用）</span>
+                <div class="mesh-mat-quick-grid">
+                  <label
+                    v-for="qr in row.quickRows"
+                    :key="row.slot + '-' + qr.key"
+                    class="mesh-mat-quick-field"
+                  >
+                    <span class="mesh-mat-quick-key">{{ qr.key }}</span>
+                    <input
+                      type="number"
+                      class="mat-inp-num mesh-mat-quick-inp"
+                      :min="qr.min"
+                      :max="qr.max"
+                      :step="qr.step"
+                      :value="qr.value"
+                      @change="onMeshSlotQuickNumber(row.slot, qr.key, $event)"
+                    />
+                  </label>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
       <template v-if="meshGeoCompress.length && (payload.object.isMesh || payload.object.isSkinnedMesh)">
         <h4 class="sub-title">几何压缩体积粗估（Draco / Meshopt 等）</h4>
         <p class="hint tiny">以下为经验占位，非真实编码器输出；便于对比数量级。</p>
@@ -631,10 +988,37 @@ function onOpenUvWindow() {
         <span class="preview-tip">拖动旋转球体 · 勾选上项可自动旋转 · 双击放大</span>
       </div>
       <dl class="kv">
-        <dt>类型</dt>
-        <dd>{{ payload.material.type }}</dd>
-        <dt>名称</dt>
-        <dd>{{ payload.material.name || '（未命名）' }}</dd>
+        <dt>{{ t('matTypeLabel') }}</dt>
+        <dd v-if="isReadOnlyContext">{{ payload.material.type }}</dd>
+        <dd v-else-if="isShaderLikeMaterial(payload.material)" class="hint tiny">{{ t('matShaderNoEdit') }}</dd>
+        <dd v-else>
+          <select
+            class="mat-edit-sel"
+            :value="payload.material.type"
+            @change="onMaterialTypeChange($event)"
+          >
+            <option
+              v-if="!materialTypeSelectOptions.some((o) => o.value === payload.material.type)"
+              :value="payload.material.type"
+              disabled
+            >
+              {{ payload.material.type }}
+            </option>
+            <option v-for="opt in materialTypeSelectOptions" :key="opt.value" :value="opt.value">
+              {{ t(opt.labelKey) }}
+            </option>
+          </select>
+        </dd>
+        <dt>{{ t('matNameLabel') }}</dt>
+        <dd v-if="isReadOnlyContext">{{ payload.material.name || '（未命名）' }}</dd>
+        <dd v-else>
+          <input
+            class="mat-edit-txt"
+            type="text"
+            :value="payload.material.name"
+            @change="onMatNameInput($event)"
+          />
+        </dd>
         <dt>UUID</dt>
         <dd class="mono uuid-line">{{ payload.material.uuid }}</dd>
         <dt>哈希值</dt>
@@ -696,17 +1080,115 @@ function onOpenUvWindow() {
       </div>
       <p v-if="!isReadOnlyContext" class="hint tiny">处理后材质：在槽格上右键可导入或清除贴图（不与磁盘写回联动）。</p>
 
-      <h4 class="sub-title">参数</h4>
-      <div class="param-table-wrap">
-        <table class="param-table">
-          <tbody>
-            <tr v-for="row in materialScalarParams(payload.material)" :key="row.key">
-              <td class="p-key">{{ row.key }}</td>
-              <td class="p-val">{{ row.value }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <h4 class="sub-title">{{ t('matParamsSectionTitle') }}</h4>
+      <template v-if="isReadOnlyContext">
+        <div class="param-table-wrap">
+          <table class="param-table">
+            <tbody>
+              <tr v-for="row in materialScalarParams(payload.material)" :key="row.key">
+                <td class="p-key">{{ row.key }}</td>
+                <td class="p-val">{{ row.value }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <template v-else-if="isShaderLikeMaterial(payload.material)">
+        <p class="hint tiny">{{ t('matShaderNoEdit') }}</p>
+        <div class="param-table-wrap">
+          <table class="param-table">
+            <tbody>
+              <tr v-for="row in materialScalarParams(payload.material)" :key="row.key">
+                <td class="p-key">{{ row.key }}</td>
+                <td class="p-val">{{ row.value }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <template v-else>
+        <p class="hint tiny">{{ t('matParamsEditHint') }}</p>
+        <div class="param-table-wrap param-table-wrap-tall">
+          <table class="param-table param-table-edit">
+            <tbody>
+              <tr v-for="row in materialEditableRows" :key="row.key">
+                <td class="p-key">{{ row.key }}</td>
+                <td class="p-val-edit">
+                  <template v-if="row.kind === 'number'">
+                    <input
+                      type="number"
+                      class="mat-inp-num"
+                      :min="row.min"
+                      :max="row.max"
+                      :step="row.step"
+                      :value="row.value"
+                      @change="onMatNumberKey(row.key, $event)"
+                    />
+                  </template>
+                  <template v-else-if="row.kind === 'bool'">
+                    <label class="check-inline">
+                      <input type="checkbox" :checked="row.value" @change="onMatBoolKey(row.key, $event)" />
+                    </label>
+                  </template>
+                  <template v-else-if="row.kind === 'color'">
+                    <input
+                      type="color"
+                      class="mat-inp-color"
+                      :value="row.value"
+                      @input="onMatColorKey(row.key, $event)"
+                    />
+                  </template>
+                  <template v-else-if="row.kind === 'vec2'">
+                    <span class="vec-inline">
+                      <input
+                        type="number"
+                        class="mat-inp-num narrow"
+                        :value="row.x"
+                        @change="onMatVec2Key(row.key, 'x', $event)"
+                      />
+                      <input
+                        type="number"
+                        class="mat-inp-num narrow"
+                        :value="row.y"
+                        @change="onMatVec2Key(row.key, 'y', $event)"
+                      />
+                    </span>
+                  </template>
+                  <template v-else-if="row.kind === 'vec3'">
+                    <span class="vec-inline">
+                      <input
+                        type="number"
+                        class="mat-inp-num narrow"
+                        :value="row.x"
+                        @change="onMatVec3Key(row.key, 'x', $event)"
+                      />
+                      <input
+                        type="number"
+                        class="mat-inp-num narrow"
+                        :value="row.y"
+                        @change="onMatVec3Key(row.key, 'y', $event)"
+                      />
+                      <input
+                        type="number"
+                        class="mat-inp-num narrow"
+                        :value="row.z"
+                        @change="onMatVec3Key(row.key, 'z', $event)"
+                      />
+                    </span>
+                  </template>
+                  <template v-else-if="row.kind === 'side'">
+                    <select class="mat-edit-sel wide" :value="row.value" @change="onMatSideChange($event)">
+                      <option :value="0">{{ t('matSideFront') }}</option>
+                      <option :value="1">{{ t('matSideBack') }}</option>
+                      <option :value="2">{{ t('matSideDouble') }}</option>
+                    </select>
+                  </template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
     </template>
 
     <template v-else-if="payload.kind === 'texture' && payload.texture">
@@ -1195,6 +1677,131 @@ function onOpenUvWindow() {
   overflow: auto;
   border: 1px solid #3a4558;
   border-radius: 4px;
+}
+.param-table-wrap-tall {
+  max-height: min(420px, 55vh);
+}
+.mat-edit-sel,
+.mat-edit-txt {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 11px;
+  border: 1px solid #4a5160;
+  border-radius: 3px;
+  background: #1b2029;
+  color: #e6ebf3;
+}
+.mat-edit-sel.wide {
+  min-width: 160px;
+}
+.mat-edit-sel--block {
+  width: 100%;
+  max-width: 100%;
+}
+.kv-tight dt {
+  flex: 0 0 80px;
+}
+.mesh-mat-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.mesh-mat-slot {
+  border: 1px solid #3a4558;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #1a1d24;
+}
+.mesh-mat-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mesh-mat-slot-label {
+  font-size: 11px;
+  color: #9fb3d6;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mesh-mat-outline-btn {
+  flex: 0 0 auto;
+}
+.mesh-mat-quick {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2f3540;
+}
+.mesh-mat-quick-title {
+  display: block;
+  font-size: 10px;
+  color: #8aa4c8;
+  margin-bottom: 6px;
+}
+.mesh-mat-quick-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.mesh-mat-quick-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mesh-mat-quick-key {
+  font-size: 9px;
+  color: #6b7a90;
+  font-family: ui-monospace, system-ui, monospace;
+}
+.mesh-mat-quick-inp {
+  max-width: 110px;
+}
+.mat-inp-num {
+  width: 100%;
+  max-width: 140px;
+  padding: 3px 5px;
+  font-size: 10px;
+  border: 1px solid #4a5160;
+  border-radius: 3px;
+  background: #1b2029;
+  color: #e6ebf3;
+}
+.mat-inp-num.narrow {
+  max-width: 72px;
+  margin-right: 4px;
+}
+.mat-inp-color {
+  width: 36px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #4a5160;
+  border-radius: 3px;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.p-val-edit {
+  color: #d0d8e6;
+  vertical-align: middle;
+}
+.vec-inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  align-items: center;
+}
+.check-inline {
+  display: inline-flex;
+  align-items: center;
+}
+.param-table-edit .p-key {
+  width: 38%;
 }
 .param-table {
   width: 100%;

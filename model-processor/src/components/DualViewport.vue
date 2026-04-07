@@ -47,6 +47,7 @@ import {
   isMeshoptSimplifySupported,
   applyMeshoptSimplifyToGeometry,
 } from '../utils/meshoptSimplifyGeometry.js'
+import { supplementPbrFromSingleMap } from '../utils/inferPbrFromSingleMap.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
@@ -459,6 +460,32 @@ function syncMeshesUsingMaterial(material) {
   }
   visit(sourceRoot)
   visit(resultRoot)
+}
+
+/**
+ * 在指定侧场景内用 newMat 替换所有对 oldMat 的引用，并保留 old 的 uuid（大纲 refId 不断档）。
+ * @param {import('three').Material} oldMat
+ * @param {import('three').Material} newMat
+ * @param {'source'|'result'} panel
+ */
+function replaceMaterialKeepUuid(oldMat, newMat, panel) {
+  if (!oldMat || !newMat || oldMat === newMat) return
+  const root = panel === 'source' ? sourceRoot : panel === 'result' ? resultRoot : null
+  if (!root) return
+  root.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return
+    if (Array.isArray(o.material)) {
+      if (!o.material.includes(oldMat)) return
+      o.material = o.material.map((m) => (m === oldMat ? newMat : m))
+    } else if (o.material === oldMat) {
+      o.material = newMat
+    }
+  })
+  const uid = oldMat.uuid
+  oldMat.dispose()
+  newMat.uuid = uid
+  syncMeshesUsingMaterial(newMat)
+  refreshOutline(panel)
 }
 
 function applyGlobalRendererSettings() {
@@ -1382,6 +1409,26 @@ function weldResultVertices() {
   return { meshes, verticesBefore, verticesAfter, welded, skipped }
 }
 
+/**
+ * 由单张 `map` 为「处理后」场景补充缺失的 PBR 贴图（Canvas 近似）。
+ * @param {{ fromSingle?: boolean, maxTextureSize?: number }} opts
+ */
+function supplementResultPbrFromSingle(opts) {
+  if (!resultRoot) throw new Error('请先加载模型并确保存在「处理后」场景')
+  const r = supplementPbrFromSingleMap(resultRoot, opts)
+  if (r.materialsTouched > 0 || r.geometriesTangents > 0) {
+    if (r.geometriesTangents > 0) afterResultGeometryMutation()
+    refreshOutline('result')
+    refreshVertexAttrNameLists()
+    emit('result-updated', {
+      outline: buildRichOutline(resultRoot, { clips: resultClips }),
+      animations: resultClips.length,
+      clips: resultClips,
+    })
+  }
+  return r
+}
+
 /** 统计「处理后」场景可遍历 Mesh 的三角面与 position 顶点数（与简化候选范围一致）。 */
 function getResultSimplifyStats() {
   let triangles = 0
@@ -1496,6 +1543,8 @@ defineExpose({
   simplifyResultMeshes,
   getResultSimplifyStats,
   weldResultVertices,
+  supplementResultPbrFromSingle,
+  replaceMaterialKeepUuid,
   linkCameras,
   resetCameras() {
     if (sourceRoot) fitCameraToObject(cameraA, controlsA, sourceRoot)

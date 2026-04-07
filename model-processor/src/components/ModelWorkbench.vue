@@ -131,7 +131,11 @@ watch([showViewportSource, showViewportResult], ([s, r]) => {
   if (!s && !r) showViewportResult.value = true
 })
 
+/** 递增以使属性面板在 Three.js 对象就地修改后重新 resolve（材质/几何引用刷新） */
+const inspectorSceneRevision = ref(0)
+
 const inspectorPayload = computed(() => {
+  inspectorSceneRevision.value
   const panel = focusPanel.value
   const id = panel === 'source' ? selectedSourceUuid.value : selectedResultUuid.value
   if (!id || !dualRef.value) return { kind: 'empty' }
@@ -203,6 +207,9 @@ const maxBones = ref(64)
 const maxInfluences = ref(4)
 const mergeTextures = ref(true)
 const pbrFromSingle = ref(true)
+const pbrMaxTextureSize = ref(2048)
+const showPbrResultDialog = ref(false)
+const pbrResultLines = ref(/** @type {string[]} */ ([]))
 
 const bakeMode = ref('texture')
 const bakeResolution = ref(2048)
@@ -269,13 +276,42 @@ function onInspectorAction(e) {
   } else if (e?.type === 'texture-decompress') {
     setStatus('解压贴图：占位（需接入解压管线）', 'ok')
   } else if (e?.type === 'vertex-attrs-changed') {
+    inspectorSceneRevision.value++
     dualRef.value?.refreshVertexAttrNameLists?.()
     dualRef.value?.afterResultGeometryMutation?.()
     setStatus('已更新网格顶点属性（下拉列表已刷新）', 'ok')
   } else if (e?.type === 'material-updated' && e.material) {
+    inspectorSceneRevision.value++
     dualRef.value?.syncMeshesUsingMaterial?.(e.material)
     const panel = e.panel === 'source' || e.panel === 'result' ? e.panel : focusPanel.value
     dualRef.value?.refreshOutline?.(panel)
+  } else if (e?.type === 'material-replaced' && e.oldMaterial && e.newMaterial) {
+    inspectorSceneRevision.value++
+    const panel = e.panel === 'source' || e.panel === 'result' ? e.panel : focusPanel.value
+    dualRef.value?.replaceMaterialKeepUuid?.(e.oldMaterial, e.newMaterial, panel)
+    dupSceneRevision.value += 1
+    setStatus(
+      locale.value === 'zh' ? '已切换材质类型（已保留 UUID）' : 'Material type changed (UUID preserved)',
+      'ok',
+    )
+  } else if (e?.type === 'select-outline-material' && e.materialUuid) {
+    const panel = e.panel === 'source' ? 'source' : 'result'
+    const outline = panel === 'source' ? sourceOutline.value : resultOutline.value
+    const id = `mat:${e.materialUuid}`
+    if (!outline.some((i) => i.uuid === id)) {
+      setStatus(locale.value === 'zh' ? '大纲中未找到该材质' : 'Material not found in outline', 'error')
+      return
+    }
+    if (panel === 'source') {
+      expandedSource.value = new Set([...expandedSource.value, 'sec-materials'])
+      selectedSourceUuid.value = id
+      focusPanel.value = 'source'
+    } else {
+      expandedResult.value = new Set([...expandedResult.value, 'sec-materials'])
+      selectedResultUuid.value = id
+      focusPanel.value = 'result'
+    }
+    inspectorSceneRevision.value++
   } else if (e?.type === 'inspector-status') {
     const msg = e.message || ''
     setStatus(msg, e.level === 'error' ? 'error' : 'ok')
@@ -333,6 +369,46 @@ function closeMergeResultDialog() {
 
 function closeWeldResultDialog() {
   showWeldResultDialog.value = false
+}
+
+function closePbrResultDialog() {
+  showPbrResultDialog.value = false
+}
+
+function runPbrSupplement() {
+  if (!pbrFromSingle.value) {
+    setStatus(t('pbrSingleOffWarn'), 'error')
+    return
+  }
+  try {
+    const fn = dualRef.value?.supplementResultPbrFromSingle
+    if (typeof fn !== 'function') throw new Error('视口未就绪')
+    const r = fn({
+      fromSingle: true,
+      maxTextureSize: pbrMaxTextureSize.value,
+    })
+    if (r.materialsTouched > 0 || r.geometriesTangents > 0) dupSceneRevision.value += 1
+    const lines = []
+    lines.push(
+      t('pbrResultSummary')
+        .replace(/\{M\}/g, String(r.materialsTouched))
+        .replace(/\{C\}/g, String(r.materialsConverted ?? 0))
+        .replace(/\{R\}/g, String(r.roughnessAdded))
+        .replace(/\{N\}/g, String(r.normalAdded))
+        .replace(/\{T\}/g, String(r.geometriesTangents)),
+    )
+    for (const s of r.skipped || []) lines.push(s)
+    pbrResultLines.value = lines
+    showPbrResultDialog.value = true
+    activeDialog.value = ''
+    const st =
+      locale.value === 'zh'
+        ? `PBR 补充：已更新 ${r.materialsTouched} 个材质槽`
+        : `PBR supplement: updated ${r.materialsTouched} material slot(s)`
+    setStatus(st, r.materialsTouched > 0 ? 'ok' : 'idle')
+  } catch (e) {
+    setStatus(e?.message || String(e), 'error')
+  }
 }
 
 function runWeldVertices() {
@@ -968,10 +1044,14 @@ onUnmounted(() => {
           </template>
 
           <template v-else-if="activeDialog === 'proc-pbr'">
-            <p class="modal-hint">{{ t('dlgPlaceholderLead') }}</p>
+            <p class="modal-hint">{{ t('pbrHint') }}</p>
             <label class="check"><input v-model="pbrFromSingle" type="checkbox" /> {{ t('pbrSingleLabel') }}</label>
+            <label class="field">
+              <span>{{ t('pbrMaxTexLabel') }}</span>
+              <input v-model.number="pbrMaxTextureSize" class="num" type="number" min="256" max="4096" step="256" />
+            </label>
             <div class="btn-row">
-              <button type="button" class="tool-btn" @click="runPlaceholder('PBR 生成'); activeDialog = ''">{{ t('pbrRun') }}</button>
+              <button type="button" class="tool-btn" @click="runPbrSupplement">{{ t('pbrRun') }}</button>
             </div>
           </template>
 
@@ -1239,6 +1319,27 @@ onUnmounted(() => {
         </div>
         <div class="merge-result-actions">
           <button type="button" class="tool-btn accent" @click="closeWeldResultDialog">{{ t('dlgMergeOk') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="showPbrResultDialog"
+      class="modal-backdrop merge-result-backdrop"
+      @click.self="closePbrResultDialog"
+    >
+      <div class="modal-panel merge-result-panel" role="alertdialog" aria-labelledby="pbr-result-title" aria-modal="true">
+        <header class="modal-head merge-result-head">
+          <h2 id="pbr-result-title">{{ t('dlgPbrResultTitle') }}</h2>
+          <button type="button" class="modal-close" aria-label="关闭" @click="closePbrResultDialog">×</button>
+        </header>
+        <div class="modal-body merge-result-body">
+          <ul class="merge-result-list">
+            <li v-for="(line, idx) in pbrResultLines" :key="idx">{{ line }}</li>
+          </ul>
+        </div>
+        <div class="merge-result-actions">
+          <button type="button" class="tool-btn accent" @click="closePbrResultDialog">{{ t('dlgMergeOk') }}</button>
         </div>
       </div>
     </div>
