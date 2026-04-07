@@ -131,11 +131,11 @@ const SUBSPECIES_PRESETS = {
   quadruped: {
     /** 马：长颈、长腿；肢端腕/球节、跗更靠下（长掌骨/跖骨），关节 t 应显著 >0.5 */
     horse: {
-      bodyLength: 1.18,
+      bodyLength: 1.14,
       bodyHeight: 0.46,
-      legLength: 0.8,
-      neckLen: 0.56,
-      headSize: 0.17,
+      legLength: 0.72,
+      neckLen: 0.6,
+      headSize: 0.182,
       tailLen: 0.44,
       hue: 0.085,
       saturation: 0.44,
@@ -674,19 +674,22 @@ function buildHorseQuadruped(p, rng) {
   const bodyW = bl * 0.42
   geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * 0.6, bl * 0.62))
   geoms.push(ellipsoid(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.33, bh * 0.2, bl * 0.14))
-  geoms.push(ellipsoid(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.48, bh * 0.28, bl * 0.31))
+  geoms.push(ellipsoid(new THREE.Vector3(0, croupY, -bl * 0.2), bodyW * 0.48, bh * 0.28, bl * 0.31))
   geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y - bh * 0.2, bl * 0.02), bodyW * 0.52, bh * 0.28, bl * 0.46))
 
   // leg anchors
   const shoulderX = bl * 0.155
   const hipX = bl * 0.17
-  const frontZ = bl * 0.24
-  const hindZ = -bl * 0.24
+  const sternumOffsetZ = 0.3
+  const pelvisOffsetZ = 0.3
+  const frontZ = bl * 0.28 + sternumOffsetZ
+  const hindZ = -bl * 0.27 - 0.5 + pelvisOffsetZ
 
-  const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.18, frontZ)
-  const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.18, frontZ)
-  const scapL = shL.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
-  const scapR = shR.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
+  const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
+  const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
+  // 肩胛更靠后上，形成马前躯的斜肩轮廓
+  const scapL = shL.clone().add(new THREE.Vector3(-bl * 0.012, bh * 0.22, -bl * 0.05))
+  const scapR = shR.clone().add(new THREE.Vector3(bl * 0.012, bh * 0.22, -bl * 0.05))
   const hipL = new THREE.Vector3(-hipX, croupY - bh * 0.16, hindZ)
   const hipR = new THREE.Vector3(hipX, croupY - bh * 0.16, hindZ)
 
@@ -696,7 +699,7 @@ function buildHorseQuadruped(p, rng) {
       0,
       shoulder.z + 0.045 + rng() * 0.012 - 0.006,
     )
-    const elbow = vecLerp(shoulder, hoof, 0.34)
+    const elbow = vecLerp(shoulder, hoof, 0.32)
     const carpus = vecLerp(shoulder, hoof, 0.62)
     const fetlock = vecLerp(shoulder, hoof, 0.9)
     return { shoulder, elbow, carpus, fetlock, hoof }
@@ -706,13 +709,16 @@ function buildHorseQuadruped(p, rng) {
     const hoof = new THREE.Vector3(
       hip.x + sideSign * 0.012 + rng() * 0.015 - 0.0075,
       0,
-      hip.z - 0.03 + rng() * 0.012 - 0.006,
+      hip.z - 0.05 + rng() * 0.012 - 0.006,
     )
-    const stifle = vecLerp(hip, hoof, 0.4)
-    stifle.z += bl * 0.075
-    const hock = vecLerp(hip, hoof, 0.69)
-    hock.z += bl * 0.058
-    const fetlock = vecLerp(hock, hoof, 0.84)
+    // 马后肢：股骨向前到膝(髌)；胫骨向后下到飞节；管骨近似垂直到系部
+    const stifle = vecLerp(hip, hoof, 0.34)
+    stifle.y += ll * 0.11
+    stifle.z += bl * 0.12
+    const hock = vecLerp(hip, hoof, 0.64)
+    hock.y += ll * 0.08
+    hock.z += bl * 0.03
+    const fetlock = vecLerp(hock, hoof, 0.8)
     return { hip, stifle, hock, fetlock, hoof }
   }
 
@@ -723,16 +729,16 @@ function buildHorseQuadruped(p, rng) {
 
   const lr = bh * 0.17
   const addFront = (L) => {
-    geoms.push(limbCylinder(L.shoulder, L.elbow, lr * 1.06, lr * 0.7))
-    geoms.push(limbCylinder(L.elbow, L.carpus, lr * 0.7, lr * 0.45))
-    geoms.push(limbCylinder(L.carpus, L.fetlock, lr * 0.42, lr * 0.28))
-    geoms.push(limbCylinder(L.fetlock, L.hoof, lr * 0.27, lr * 0.2))
+    geoms.push(limbCylinder(L.shoulder, L.elbow, lr * 2.1, lr * 1.55))
+    geoms.push(limbCylinder(L.elbow, L.carpus, lr * 1.5, lr * 1.08))
+    geoms.push(limbCylinder(L.carpus, L.fetlock, lr * 1.02, lr * 0.74))
+    geoms.push(limbCylinder(L.fetlock, L.hoof, lr * 0.72, lr * 0.52))
   }
   const addHind = (L) => {
-    geoms.push(limbCylinder(L.hip, L.stifle, lr * 1.04, lr * 0.7))
-    geoms.push(limbCylinder(L.stifle, L.hock, lr * 0.68, lr * 0.42))
-    geoms.push(limbCylinder(L.hock, L.fetlock, lr * 0.42, lr * 0.27))
-    geoms.push(limbCylinder(L.fetlock, L.hoof, lr * 0.26, lr * 0.2))
+    geoms.push(limbCylinder(L.hip, L.stifle, lr * 2.2, lr * 1.62))
+    geoms.push(limbCylinder(L.stifle, L.hock, lr * 1.56, lr * 1.1))
+    geoms.push(limbCylinder(L.hock, L.fetlock, lr * 1.02, lr * 0.74))
+    geoms.push(limbCylinder(L.fetlock, L.hoof, lr * 0.72, lr * 0.52))
   }
   addFront(fl)
   addFront(fr)
@@ -753,9 +759,9 @@ function buildHorseQuadruped(p, rng) {
   }
 
   // neck / head
-  const neckBase = new THREE.Vector3(0, withersY + bh * 0.04, bl * 0.36)
-  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.34, nk * 0.45))
-  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.16, nk * 0.46))
+  const neckBase = new THREE.Vector3(0, withersY + bh * 0.05, bl * 0.4 + sternumOffsetZ)
+  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.42, nk * 0.38))
+  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.1, nk * 0.48))
   const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.02, hs * 0.68))
   geoms.push(limbCylinder(neckBase, neckMid, lr * 0.95, lr * 0.62))
   geoms.push(limbCylinder(neckMid, headBase, lr * 0.62, lr * 0.35))
@@ -766,14 +772,14 @@ function buildHorseQuadruped(p, rng) {
   geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, -hs * 0.22, hs * 0.25)), hs * 0.26, hs * 0.16, hs * 0.44))
 
   // tail
-  const tailStart = new THREE.Vector3(0, croupY + bh * 0.12, -bl * 0.35)
-  const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.08 - 0.04, tl * 0.14, -tl))
+  const tailStart = new THREE.Vector3(0, croupY + bh * 0.04, hindZ - bl * 0.08)
+  const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.05 - 0.025, -tl * 0.48, -tl * 0.82))
   geoms.push(limbCylinder(tailStart, tailEnd, lr * 0.42, lr * 0.2))
 
   // bones hierarchy
   const pelvisP = new THREE.Vector3(0, croupY - bh * 0.12, hindZ)
   const lumbarP = new THREE.Vector3(0, ll + bh * 0.62, -bl * 0.06)
-  const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1)
+  const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1 + sternumOffsetZ)
   const cervicalP = neckMid.clone().lerp(neckBase, 0.45)
 
   bones.push({ name: 'Root', pos: new THREE.Vector3(0, 0, 0), parent: null })
@@ -800,13 +806,13 @@ function buildHorseQuadruped(p, rng) {
   bones.push({ name: 'Paw_FR', pos: fr.hoof.clone(), parent: 'Cannon_FR' })
 
   bones.push({ name: 'Femur_BL', pos: blg.hip.clone(), parent: 'Pelvis' })
-  bones.push({ name: 'Tibia_BL', pos: blg.hock.clone(), parent: 'Femur_BL' })
-  bones.push({ name: 'Cannon_BL', pos: blg.fetlock.clone(), parent: 'Tibia_BL' })
+  bones.push({ name: 'Tibia_BL', pos: blg.stifle.clone(), parent: 'Femur_BL' })
+  bones.push({ name: 'Cannon_BL', pos: blg.hock.clone(), parent: 'Tibia_BL' })
   bones.push({ name: 'Paw_BL', pos: blg.hoof.clone(), parent: 'Cannon_BL' })
 
   bones.push({ name: 'Femur_BR', pos: brg.hip.clone(), parent: 'Pelvis' })
-  bones.push({ name: 'Tibia_BR', pos: brg.hock.clone(), parent: 'Femur_BR' })
-  bones.push({ name: 'Cannon_BR', pos: brg.fetlock.clone(), parent: 'Tibia_BR' })
+  bones.push({ name: 'Tibia_BR', pos: brg.stifle.clone(), parent: 'Femur_BR' })
+  bones.push({ name: 'Cannon_BR', pos: brg.hock.clone(), parent: 'Tibia_BR' })
   bones.push({ name: 'Paw_BR', pos: brg.hoof.clone(), parent: 'Cannon_BR' })
 
   return { geoms: geoms.filter(Boolean), bones }
@@ -845,12 +851,14 @@ function buildHorseZBrushLike(p, rng) {
   const bodyW = bl * 0.42
   const shoulderX = bl * 0.155
   const hipX = bl * 0.17
-  const frontZ = bl * 0.24
-  const hindZ = -bl * 0.24
-  const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.18, frontZ)
-  const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.18, frontZ)
-  const scapL = shL.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
-  const scapR = shR.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
+  const sternumOffsetZ = 0.3
+  const pelvisOffsetZ = 0.3
+  const frontZ = bl * 0.28 + sternumOffsetZ
+  const hindZ = -bl * 0.27 - 0.5 + pelvisOffsetZ
+  const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
+  const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
+  const scapL = shL.clone().add(new THREE.Vector3(-bl * 0.012, bh * 0.22, -bl * 0.05))
+  const scapR = shR.clone().add(new THREE.Vector3(bl * 0.012, bh * 0.22, -bl * 0.05))
   const hipL = new THREE.Vector3(-hipX, croupY - bh * 0.16, hindZ)
   const hipR = new THREE.Vector3(hipX, croupY - bh * 0.16, hindZ)
   const addBall = (c, r) => metaballs.push({ c: c.clone(), r: Math.max(0.005, r) })
@@ -881,7 +889,7 @@ function buildHorseZBrushLike(p, rng) {
       0,
       shoulder.z + 0.045 + rng() * 0.012 - 0.006,
     )
-    const elbow = vecLerp(shoulder, hoof, 0.34)
+    const elbow = vecLerp(shoulder, hoof, 0.32)
     const carpus = vecLerp(shoulder, hoof, 0.62)
     const fetlock = vecLerp(shoulder, hoof, 0.9)
     return { shoulder, elbow, carpus, fetlock, hoof }
@@ -890,13 +898,15 @@ function buildHorseZBrushLike(p, rng) {
     const hoof = new THREE.Vector3(
       hip.x + sideSign * 0.012 + rng() * 0.015 - 0.0075,
       0,
-      hip.z - 0.03 + rng() * 0.012 - 0.006,
+      hip.z - 0.05 + rng() * 0.012 - 0.006,
     )
-    const stifle = vecLerp(hip, hoof, 0.4)
-    stifle.z += bl * 0.075
-    const hock = vecLerp(hip, hoof, 0.69)
-    hock.z += bl * 0.058
-    const fetlock = vecLerp(hock, hoof, 0.84)
+    const stifle = vecLerp(hip, hoof, 0.34)
+    stifle.y += ll * 0.11
+    stifle.z += bl * 0.12
+    const hock = vecLerp(hip, hoof, 0.64)
+    hock.y += ll * 0.08
+    hock.z += bl * 0.03
+    const fetlock = vecLerp(hock, hoof, 0.8)
     return { hip, stifle, hock, fetlock, hoof }
   }
 
@@ -904,13 +914,13 @@ function buildHorseZBrushLike(p, rng) {
   const fr = frontLegPoints(shR, 1)
   const blg = hindLegPoints(hipL, -1)
   const brg = hindLegPoints(hipR, 1)
-  const neckBase = new THREE.Vector3(0, withersY + bh * 0.04, bl * 0.36)
-  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.34, nk * 0.45))
-  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.16, nk * 0.46))
+  const neckBase = new THREE.Vector3(0, withersY + bh * 0.05, bl * 0.4 + sternumOffsetZ)
+  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.42, nk * 0.38))
+  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.1, nk * 0.48))
   const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.02, hs * 0.68))
   const muzzle = headC.clone().add(new THREE.Vector3(0, -hs * 0.1, hs * 0.74))
-  const tailStart = new THREE.Vector3(0, croupY + bh * 0.12, -bl * 0.35)
-  const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.08 - 0.04, tl * 0.14, -tl))
+  const tailStart = new THREE.Vector3(0, croupY + bh * 0.04, hindZ - bl * 0.08)
+  const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.05 - 0.025, -tl * 0.48, -tl * 0.82))
 
   function blobChainAdaptive(a, b, r0, r1, density = 1) {
     const len = a.distanceTo(b)
@@ -925,10 +935,10 @@ function buildHorseZBrushLike(p, rng) {
     }
   }
 
-  const ribCageC = new THREE.Vector3(0, ll + bh * 0.62, bl * 0.08)
-  const abdomenC = new THREE.Vector3(0, ll + bh * 0.48, -bl * 0.02)
-  const pelvisMassC = new THREE.Vector3(0, ll + bh * 0.57, -bl * 0.27)
-  const withersMassC = new THREE.Vector3(0, withersY + bh * 0.03, bl * 0.2)
+  const ribCageC = new THREE.Vector3(0, ll + bh * 0.66, bl * 0.1 + sternumOffsetZ)
+  const abdomenC = new THREE.Vector3(0, ll + bh * 0.52, -bl * 0.02)
+  const pelvisMassC = new THREE.Vector3(0, ll + bh * 0.61, -bl * 0.24)
+  const withersMassC = new THREE.Vector3(0, withersY + bh * 0.03, bl * 0.2 + sternumOffsetZ)
   geoms.push(ellipsoid(ribCageC, bodyW * 0.44, bh * 0.5, bl * 0.34))
   addEllipsoidBalls(ribCageC, bodyW * 0.44, bh * 0.5, bl * 0.34, 7, 0.98)
   geoms.push(ellipsoid(abdomenC, bodyW * 0.4, bh * 0.38, bl * 0.28))
@@ -940,26 +950,30 @@ function buildHorseZBrushLike(p, rng) {
   // 肩峰与后大腿体块
   addEllipsoidBalls(new THREE.Vector3(-bodyW * 0.24, ll + bh * 0.54, bl * 0.2), bodyW * 0.16, bh * 0.24, bl * 0.16, 4, 0.96)
   addEllipsoidBalls(new THREE.Vector3(bodyW * 0.24, ll + bh * 0.54, bl * 0.2), bodyW * 0.16, bh * 0.24, bl * 0.16, 4, 0.96)
-  addEllipsoidBalls(new THREE.Vector3(-bodyW * 0.23, ll + bh * 0.5, -bl * 0.24), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
-  addEllipsoidBalls(new THREE.Vector3(bodyW * 0.23, ll + bh * 0.5, -bl * 0.24), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
+  addEllipsoidBalls(new THREE.Vector3(-bodyW * 0.23, ll + bh * 0.5, -bl * 0.2), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
+  addEllipsoidBalls(new THREE.Vector3(bodyW * 0.23, ll + bh * 0.5, -bl * 0.2), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
+  addEllipsoidBalls(new THREE.Vector3(0, withersY + bh * 0.08, bl * 0.18 + sternumOffsetZ), bodyW * 0.18, bh * 0.14, bl * 0.14, 3, 0.95)
+  addEllipsoidBalls(new THREE.Vector3(0, ll + bh * 0.63, -bl * 0.08), bodyW * 0.24, bh * 0.12, bl * 0.22, 3, 0.95)
 
   const lr = bh * 0.19
   blobChainAdaptive(scapL, fl.shoulder, lr * 0.88, lr * 0.72, 0.9)
   blobChainAdaptive(scapR, fr.shoulder, lr * 0.88, lr * 0.72, 0.9)
   for (const L of [fl, fr]) {
-    blobChainAdaptive(L.shoulder, L.elbow, lr * 0.96, lr * 0.66, 1.05)
-    blobChainAdaptive(L.elbow, L.carpus, lr * 0.64, lr * 0.42, 1.1)
-    blobChainAdaptive(L.carpus, L.fetlock, lr * 0.4, lr * 0.26, 1.15)
-    blobChainAdaptive(L.fetlock, L.hoof, lr * 0.24, lr * 0.19, 1.05)
+    blobChainAdaptive(L.shoulder, L.elbow, lr * 2.0, lr * 1.48, 1.05)
+    blobChainAdaptive(L.elbow, L.carpus, lr * 1.45, lr * 1.04, 1.1)
+    blobChainAdaptive(L.carpus, L.fetlock, lr * 1.0, lr * 0.72, 1.15)
+    blobChainAdaptive(L.fetlock, L.hoof, lr * 0.7, lr * 0.5, 1.05)
+    addBall(L.hoof.clone().add(new THREE.Vector3(0, lr * 0.05, 0)), lr * 0.16)
   }
   for (const L of [blg, brg]) {
-    blobChainAdaptive(L.hip, L.stifle, lr * 0.92, lr * 0.62, 1.05)
-    blobChainAdaptive(L.stifle, L.hock, lr * 0.62, lr * 0.4, 1.1)
-    blobChainAdaptive(L.hock, L.fetlock, lr * 0.38, lr * 0.24, 1.15)
-    blobChainAdaptive(L.fetlock, L.hoof, lr * 0.22, lr * 0.18, 1.05)
+    blobChainAdaptive(L.hip, L.stifle, lr * 2.05, lr * 1.5, 1.05)
+    blobChainAdaptive(L.stifle, L.hock, lr * 1.46, lr * 1.02, 1.1)
+    blobChainAdaptive(L.hock, L.fetlock, lr * 0.98, lr * 0.7, 1.15)
+    blobChainAdaptive(L.fetlock, L.hoof, lr * 0.68, lr * 0.5, 1.05)
+    addBall(L.hoof.clone().add(new THREE.Vector3(0, lr * 0.05, 0)), lr * 0.15)
   }
-  blobChainAdaptive(neckBase, neckMid, lr * 1.0, lr * 0.68, 1.05)
-  blobChainAdaptive(neckMid, headBase, lr * 0.6, lr * 0.34, 1.05)
+  blobChainAdaptive(neckBase, neckMid, lr * 1.02, lr * 0.72, 1.05)
+  blobChainAdaptive(neckMid, headBase, lr * 0.62, lr * 0.38, 1.05)
   geoms.push(ellipsoid(headC, hs * 0.42, hs * 0.78, hs * 1.6))
   addEllipsoidBalls(headC, hs * 0.42, hs * 0.78, hs * 1.6, 5, 0.92)
   geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, hs * 0.17, hs * 0.16)), hs * 0.3, hs * 0.24, hs * 0.52))
@@ -977,7 +991,7 @@ function buildHorseZBrushLike(p, rng) {
 
   const pelvisP = new THREE.Vector3(0, croupY - bh * 0.12, hindZ)
   const lumbarP = new THREE.Vector3(0, ll + bh * 0.62, -bl * 0.06)
-  const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1)
+  const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1 + sternumOffsetZ)
   const cervicalP = neckMid.clone().lerp(neckBase, 0.45)
   bones.push({ name: 'Root', pos: new THREE.Vector3(0, 0, 0), parent: null })
   bones.push({ name: 'Pelvis', pos: pelvisP, parent: 'Root' })
@@ -1000,13 +1014,37 @@ function buildHorseZBrushLike(p, rng) {
   bones.push({ name: 'Cannon_FR', pos: fr.fetlock.clone(), parent: 'RadiusUlna_FR' })
   bones.push({ name: 'Paw_FR', pos: fr.hoof.clone(), parent: 'Cannon_FR' })
   bones.push({ name: 'Femur_BL', pos: blg.hip.clone(), parent: 'Pelvis' })
-  bones.push({ name: 'Tibia_BL', pos: blg.hock.clone(), parent: 'Femur_BL' })
-  bones.push({ name: 'Cannon_BL', pos: blg.fetlock.clone(), parent: 'Tibia_BL' })
+  bones.push({ name: 'Tibia_BL', pos: blg.stifle.clone(), parent: 'Femur_BL' })
+  bones.push({ name: 'Cannon_BL', pos: blg.hock.clone(), parent: 'Tibia_BL' })
   bones.push({ name: 'Paw_BL', pos: blg.hoof.clone(), parent: 'Cannon_BL' })
   bones.push({ name: 'Femur_BR', pos: brg.hip.clone(), parent: 'Pelvis' })
-  bones.push({ name: 'Tibia_BR', pos: brg.hock.clone(), parent: 'Femur_BR' })
-  bones.push({ name: 'Cannon_BR', pos: brg.fetlock.clone(), parent: 'Tibia_BR' })
+  bones.push({ name: 'Tibia_BR', pos: brg.stifle.clone(), parent: 'Femur_BR' })
+  bones.push({ name: 'Cannon_BR', pos: brg.hock.clone(), parent: 'Tibia_BR' })
   bones.push({ name: 'Paw_BR', pos: brg.hoof.clone(), parent: 'Cannon_BR' })
+
+  // 额外父子连接层：连接所有骨对（排除骨盆以上的脊柱/头部链）
+  const abovePelvis = new Set(['Lumbar', 'Thoracic', 'Cervical', 'Skull', 'Forehead', 'Muzzle'])
+  /** @param {string} n */
+  function boneRadius(n) {
+    if (/Femur|Humerus/i.test(n)) return lr * 1.45
+    if (/Tibia|RadiusUlna/i.test(n)) return lr * 1.0
+    if (/Cannon/i.test(n)) return lr * 0.72
+    if (/Paw|Foot|Hand/i.test(n)) return lr * 0.5
+    if (/Scapula/i.test(n)) return lr * 1.15
+    if (/Tail/i.test(n)) return lr * 0.34
+    return lr * 0.75
+  }
+  const byName = new Map(bones.map((b) => [b.name, b]))
+  for (const b of bones) {
+    if (!b.parent) continue
+    if (b.name === 'Pelvis') continue
+    const pBone = byName.get(b.parent)
+    if (!pBone) continue
+    if (abovePelvis.has(b.name) && abovePelvis.has(b.parent)) continue
+    const r0 = boneRadius(b.parent)
+    const r1 = boneRadius(b.name)
+    blobChainAdaptive(pBone.pos, b.pos, r0, r1, 0.72)
+  }
 
   const useClosedSurface = p.zbrushUseClosedSurface !== false
   const surfaceBlend =
