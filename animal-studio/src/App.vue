@@ -337,6 +337,39 @@ function selectHierarchyNode(node) {
               <p v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush'" class="stat-line hint">
                 根据骨骼节点关系生成重叠球团体块（类似 ZBrush blocking），再自动蒙皮。
               </p>
+              <label v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush'" class="field">
+                <span>Quad 重建密度</span>
+                <select v-model="params.zbrushQuadDensity" class="select">
+                  <option value="auto">自动（推荐）</option>
+                  <option value="low">低（更快）</option>
+                  <option value="medium">中（默认）</option>
+                  <option value="high">高（更细）</option>
+                </select>
+              </label>
+              <label v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush'" class="field menu-check">
+                <input v-model="params.zbrushUseClosedSurface" type="checkbox" />
+                <span>使用连续闭合壳体（关闭可观察原始球团）</span>
+              </label>
+              <label v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush' && params.zbrushUseClosedSurface" class="field">
+                <span>壳体融合强度</span>
+                <select v-model="params.zbrushSurfaceBlend" class="select">
+                  <option value="low">低（更贴球团）</option>
+                  <option value="medium">中（默认）</option>
+                  <option value="high">高（更平滑）</option>
+                </select>
+              </label>
+              <label v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush' && params.zbrushUseClosedSurface" class="field">
+                <span>壳体膨胀值 {{ Number(params.zbrushShellInflate || 0).toFixed(2) }}</span>
+                <input v-model.number="params.zbrushShellInflate" type="range" min="-0.2" max="0.2" step="0.01" />
+              </label>
+              <label v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush' && params.zbrushUseClosedSurface" class="field menu-check">
+                <input v-model="params.zbrushAutoMatchVolume" type="checkbox" />
+                <span>自动匹配体积</span>
+              </label>
+              <label v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush' && params.zbrushUseClosedSurface && params.zbrushAutoMatchVolume" class="field">
+                <span>体积误差目标 ±{{ Number(params.zbrushVolumeErrorTarget || 0).toFixed(1) }}%</span>
+                <input v-model.number="params.zbrushVolumeErrorTarget" type="range" min="2" max="20" step="0.5" />
+              </label>
               <label class="field"><span>体长</span><input v-model.number="params.bodyLength" type="range" min="0.4" max="1.2" step="0.02" /></label>
               <label class="field"><span>体高</span><input v-model.number="params.bodyHeight" type="range" min="0.2" max="0.55" step="0.02" /></label>
               <label class="field"><span>腿长</span><input v-model.number="params.legLength" type="range" min="0.25" max="0.75" step="0.02" /></label>
@@ -392,6 +425,10 @@ function selectHierarchyNode(node) {
             <div class="dock-head">统计</div>
             <p class="stat-line">几何片数：{{ stats.parts }}</p>
             <p class="stat-line">骨骼关节数：{{ stats.bones }}</p>
+            <p v-if="stats.volumeErrorPct != null" class="stat-line">
+              壳体体积误差：{{ Number(stats.volumeErrorPct).toFixed(2) }}%
+              <span v-if="stats.volumeAutoMatched">（已自动匹配）</span>
+            </p>
           </div>
         </div>
         <div

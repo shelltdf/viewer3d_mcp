@@ -1,5 +1,6 @@
 import * as THREE from 'three'
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
 import {
   applySkinToGeometry,
   attachRagdollShapeExtentsFromSkin,
@@ -131,11 +132,14 @@ const SUBSPECIES_PRESETS = {
     /** 马：长颈、长腿；肢端腕/球节、跗更靠下（长掌骨/跖骨），关节 t 应显著 >0.5 */
     horse: {
       bodyLength: 1.06,
-      bodyHeight: 0.35,
+      bodyHeight: 0.4,
       legLength: 0.7,
       neckLen: 0.56,
       headSize: 0.152,
       tailLen: 0.44,
+      hue: 0.085,
+      saturation: 0.48,
+      lightness: 0.34,
       quadStanceX: 0.318,
       quadStanceZ: 0.268,
       quadKneeAlongLeg: 0.61,
@@ -440,6 +444,12 @@ export function defaultCreatureParams(kind) {
       headSize: 0.18,
       tailLen: 0.25,
       horseWorkflow: 'procedural',
+      zbrushQuadDensity: 'auto',
+      zbrushUseClosedSurface: true,
+      zbrushSurfaceBlend: 'medium',
+      zbrushAutoMatchVolume: false,
+      zbrushVolumeErrorTarget: 8,
+      zbrushShellInflate: 0,
       quadStanceX: 0.35,
       quadStanceZ: 0.2,
       quadKneeAlongLeg: 0.52,
@@ -796,6 +806,8 @@ function buildHorseQuadruped(p, rng) {
  * 目标是先得到接近雕塑 blocking 的体量关系，再走自动蒙皮。
  */
 function buildHorseZBrushLike(p, rng) {
+  /** @type {{ c: THREE.Vector3, r: number }[]} */
+  const metaballs = []
   const geoms = []
   /** @type {BoneJoint[]} */
   const bones = []
@@ -806,12 +818,20 @@ function buildHorseZBrushLike(p, rng) {
   const nk = p.neckLen * s
   const hs = p.headSize * s
   const tl = p.tailLen * s
-
+  const densityIdRaw =
+    p.zbrushQuadDensity === 'low' ||
+    p.zbrushQuadDensity === 'medium' ||
+    p.zbrushQuadDensity === 'high' ||
+    p.zbrushQuadDensity === 'auto'
+      ? p.zbrushQuadDensity
+      : 'auto'
+  const autoDensityScale = THREE.MathUtils.clamp(0.9 + bl * 0.22 + bh * 0.75 + ll * 0.15, 0.85, 1.5)
+  const densityScale =
+    densityIdRaw === 'low' ? 0.72 : densityIdRaw === 'medium' ? 1.0 : densityIdRaw === 'high' ? 1.42 : autoDensityScale
   const withersY = ll + bh * 1.08
   const croupY = ll + bh * 0.94
   const bodyC = new THREE.Vector3(0, ll + bh * 0.55, -bl * 0.02)
   const bodyW = bl * 0.42
-
   const shoulderX = bl * 0.155
   const hipX = bl * 0.17
   const frontZ = bl * 0.24
@@ -822,6 +842,27 @@ function buildHorseZBrushLike(p, rng) {
   const scapR = shR.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
   const hipL = new THREE.Vector3(-hipX, croupY - bh * 0.16, hindZ)
   const hipR = new THREE.Vector3(hipX, croupY - bh * 0.16, hindZ)
+  const addBall = (c, r) => metaballs.push({ c: c.clone(), r: Math.max(0.005, r) })
+  function addEllipsoidBalls(c, rx, ry, rz, n = 5, fill = 0.95) {
+    const major = Math.max(rx, ry, rz)
+    const minor = Math.max(0.005, Math.min(rx, ry, rz) * fill)
+    if (major <= minor * 1.15 || n <= 1) {
+      addBall(c, minor)
+      return
+    }
+    let axis = new THREE.Vector3(1, 0, 0)
+    if (ry >= rx && ry >= rz) axis.set(0, 1, 0)
+    else if (rz >= rx && rz >= ry) axis.set(0, 0, 1)
+    const half = Math.max(0, major - minor)
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0 : i / (n - 1)
+      const o = (t * 2 - 1) * half
+      const cc = c.clone().addScaledVector(axis, o)
+      // 两端略收，避免变成“香肠鼓包”
+      const taper = 1 - Math.abs(t * 2 - 1) * 0.08
+      addBall(cc, minor * taper)
+    }
+  }
 
   function frontLegPoints(shoulder, sideSign) {
     const hoof = new THREE.Vector3(
@@ -852,7 +893,6 @@ function buildHorseZBrushLike(p, rng) {
   const fr = frontLegPoints(shR, 1)
   const blg = hindLegPoints(hipL, -1)
   const brg = hindLegPoints(hipR, 1)
-
   const neckBase = new THREE.Vector3(0, withersY + bh * 0.04, bl * 0.36)
   const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.34, nk * 0.45))
   const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.16, nk * 0.46))
@@ -864,23 +904,29 @@ function buildHorseZBrushLike(p, rng) {
   function blobChainAdaptive(a, b, r0, r1, density = 1) {
     const len = a.distanceTo(b)
     const rAvg = Math.max(1e-4, (r0 + r1) * 0.5)
-    // 长段更密，短段更疏；形成类似 dynamesh 球团叠加的连续体
     const steps = Math.max(2, Math.min(16, Math.round((len / (rAvg * 0.62)) * density)))
     for (let i = 0; i <= steps; i++) {
       const t = i / steps
       const c = vecLerp(a, b, t)
       const rr = (r0 * (1 - t) + r1 * t) * (1 + Math.sin(t * Math.PI) * 0.12)
       geoms.push(sphere(c, rr, 14))
+      addBall(c, rr)
     }
   }
 
-  // torso blobs
-  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * 0.62, bl * 0.64))
+  geoms.push(ellipsoid(bodyC, bodyW * 0.52, bh * 0.68, bl * 0.66))
+  addEllipsoidBalls(bodyC, bodyW * 0.52, bh * 0.68, bl * 0.66, 9, 1.0)
   geoms.push(ellipsoid(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.35, bh * 0.24, bl * 0.18))
+  addEllipsoidBalls(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.35, bh * 0.24, bl * 0.18, 4, 0.96)
   geoms.push(ellipsoid(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.5, bh * 0.3, bl * 0.33))
+  addEllipsoidBalls(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.5, bh * 0.3, bl * 0.33, 6, 0.96)
   geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y - bh * 0.22, bl * 0.01), bodyW * 0.56, bh * 0.34, bl * 0.5))
+  addEllipsoidBalls(new THREE.Vector3(0, bodyC.y - bh * 0.22, bl * 0.01), bodyW * 0.56, bh * 0.34, bl * 0.5, 6, 0.92)
+  // 胸廓/腹部补体块，减少“干瘪”
+  addEllipsoidBalls(new THREE.Vector3(0, bodyC.y - bh * 0.06, bl * 0.12), bodyW * 0.46, bh * 0.36, bl * 0.28, 5, 0.95)
+  addEllipsoidBalls(new THREE.Vector3(0, bodyC.y - bh * 0.17, -bl * 0.1), bodyW * 0.44, bh * 0.32, bl * 0.24, 5, 0.95)
 
-  const lr = bh * 0.17
+  const lr = bh * 0.2
   blobChainAdaptive(scapL, fl.shoulder, lr * 0.88, lr * 0.72, 0.9)
   blobChainAdaptive(scapR, fr.shoulder, lr * 0.88, lr * 0.72, 0.9)
   for (const L of [fl, fr]) {
@@ -895,26 +941,23 @@ function buildHorseZBrushLike(p, rng) {
     blobChainAdaptive(L.hock, L.fetlock, lr * 0.38, lr * 0.24, 1.15)
     blobChainAdaptive(L.fetlock, L.hoof, lr * 0.22, lr * 0.18, 1.05)
   }
-
-  blobChainAdaptive(neckBase, neckMid, lr * 0.92, lr * 0.62, 1.1)
+  blobChainAdaptive(neckBase, neckMid, lr * 1.06, lr * 0.72, 1.15)
   blobChainAdaptive(neckMid, headBase, lr * 0.62, lr * 0.36, 1.15)
   geoms.push(ellipsoid(headC, hs * 0.42, hs * 0.78, hs * 1.6))
+  addEllipsoidBalls(headC, hs * 0.42, hs * 0.78, hs * 1.6, 5, 0.92)
   geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, hs * 0.17, hs * 0.16)), hs * 0.3, hs * 0.24, hs * 0.52))
+  addEllipsoidBalls(headC.clone().add(new THREE.Vector3(0, hs * 0.17, hs * 0.16)), hs * 0.3, hs * 0.24, hs * 0.52, 3, 0.95)
   geoms.push(cone(muzzle, hs * 0.23, hs * 0.72, new THREE.Vector3(0, -0.06, 1)))
+  addBall(muzzle.clone().add(new THREE.Vector3(0, 0, hs * 0.2)), hs * 0.23)
   geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, -hs * 0.22, hs * 0.25)), hs * 0.26, hs * 0.16, hs * 0.44))
-  // 头部二次球团细分：眼眶/颧/下颌角
-  const eyeLX = -hs * 0.19
-  const eyeRX = hs * 0.19
-  const eyeY = hs * 0.1
-  const eyeZ = hs * 0.35
-  geoms.push(sphere(headC.clone().add(new THREE.Vector3(eyeLX, eyeY, eyeZ)), hs * 0.12, 12))
-  geoms.push(sphere(headC.clone().add(new THREE.Vector3(eyeRX, eyeY, eyeZ)), hs * 0.12, 12))
-  geoms.push(sphere(headC.clone().add(new THREE.Vector3(-hs * 0.24, -hs * 0.08, hs * 0.18)), hs * 0.12, 12))
-  geoms.push(sphere(headC.clone().add(new THREE.Vector3(hs * 0.24, -hs * 0.08, hs * 0.18)), hs * 0.12, 12))
-  geoms.push(sphere(headC.clone().add(new THREE.Vector3(0, -hs * 0.18, -hs * 0.08)), hs * 0.12, 12))
+  addEllipsoidBalls(headC.clone().add(new THREE.Vector3(0, -hs * 0.22, hs * 0.25)), hs * 0.26, hs * 0.16, hs * 0.44, 3, 0.95)
+  addBall(headC.clone().add(new THREE.Vector3(-hs * 0.19, hs * 0.1, hs * 0.35)), hs * 0.12)
+  addBall(headC.clone().add(new THREE.Vector3(hs * 0.19, hs * 0.1, hs * 0.35)), hs * 0.12)
+  addBall(headC.clone().add(new THREE.Vector3(-hs * 0.24, -hs * 0.08, hs * 0.18)), hs * 0.12)
+  addBall(headC.clone().add(new THREE.Vector3(hs * 0.24, -hs * 0.08, hs * 0.18)), hs * 0.12)
+  addBall(headC.clone().add(new THREE.Vector3(0, -hs * 0.18, -hs * 0.08)), hs * 0.12)
   blobChainAdaptive(tailStart, tailEnd, lr * 0.4, lr * 0.18, 1.1)
 
-  // bone hierarchy (same as horse dedicated topology)
   const pelvisP = new THREE.Vector3(0, croupY - bh * 0.12, hindZ)
   const lumbarP = new THREE.Vector3(0, ll + bh * 0.62, -bl * 0.06)
   const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1)
@@ -948,7 +991,225 @@ function buildHorseZBrushLike(p, rng) {
   bones.push({ name: 'Cannon_BR', pos: brg.fetlock.clone(), parent: 'Tibia_BR' })
   bones.push({ name: 'Paw_BR', pos: brg.hoof.clone(), parent: 'Cannon_BR' })
 
-  return { geoms: geoms.filter(Boolean), bones }
+  const useClosedSurface = p.zbrushUseClosedSurface !== false
+  const surfaceBlend =
+    p.zbrushSurfaceBlend === 'low' || p.zbrushSurfaceBlend === 'high' ? p.zbrushSurfaceBlend : 'medium'
+  const surfaceResult = useClosedSurface
+    ? buildMetaballSurface(
+        metaballs,
+        densityScale,
+        surfaceBlend,
+        p.zbrushAutoMatchVolume !== false,
+        Number.isFinite(Number(p.zbrushVolumeErrorTarget)) ? Number(p.zbrushVolumeErrorTarget) : 8,
+        Number.isFinite(Number(p.zbrushShellInflate)) ? Number(p.zbrushShellInflate) : 0,
+      )
+    : null
+  const continuousSurface = surfaceResult?.geometry ?? null
+  return {
+    geoms: continuousSurface ? [continuousSurface] : geoms.filter(Boolean),
+    bones,
+    generationMeta: {
+      pipeline: continuousSurface
+        ? ['skeleton', 'zbrush-blobs', 'continuous-closed-surface']
+        : ['skeleton', 'zbrush-blobs'],
+      useClosedSurface,
+      surfaceBlend,
+      quadDensity: densityIdRaw,
+      quadDensityScale: densityScale,
+      volumeTarget: surfaceResult?.metrics?.targetVolume ?? null,
+      volumeShell: surfaceResult?.metrics?.meshVolume ?? null,
+      volumeErrorPct: surfaceResult?.metrics?.errorPct ?? null,
+      volumeAutoMatched: surfaceResult?.metrics?.autoMatched ?? false,
+      zbrushBlobParts: metaballs.length,
+      quadParts: continuousSurface ? 1 : geoms.length,
+    },
+  }
+}
+
+/**
+ * 从球团场提取闭合连续外壳（等值面）
+ * @param {{ c: THREE.Vector3, r: number }[]} balls
+ * @param {number} densityScale
+ * @param {'low'|'medium'|'high'} surfaceBlend
+ * @param {boolean} autoMatchVolume
+ * @param {number} targetErrorPct
+ * @param {number} shellInflate
+ */
+function buildMetaballSurface(
+  balls,
+  densityScale,
+  surfaceBlend = 'medium',
+  autoMatchVolume = true,
+  targetErrorPct = 8,
+  shellInflate = 0,
+) {
+  if (!balls.length) return null
+  const targetMin = new THREE.Vector3(Infinity, Infinity, Infinity)
+  const targetMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity)
+  let rMaxStat = 0
+  for (const b of balls) {
+    targetMin.min(b.c.clone().addScalar(-b.r))
+    targetMax.max(b.c.clone().addScalar(b.r))
+    if (b.r > rMaxStat) rMaxStat = b.r
+  }
+
+  // 提取场边界使用更大 padding，避免头尾/肢端被裁切造成体积严重偏差
+  const pad = Math.max(0.04, rMaxStat * 1.4)
+  const min = targetMin.clone().addScalar(-pad)
+  const max = targetMax.clone().addScalar(pad)
+  const ext = new THREE.Vector3().subVectors(max, min)
+  if (ext.x < 1e-5 || ext.y < 1e-5 || ext.z < 1e-5) return null
+
+  let rSum = 0
+  let r2Sum = 0
+  let rMin = Infinity
+  for (const b of balls) {
+    const rr = Math.max(1e-6, b.r)
+    rSum += rr
+    r2Sum += rr * rr
+    if (rr < rMin) rMin = rr
+    if (rr > rMaxStat) rMaxStat = rr
+  }
+  const rMean = rSum / balls.length
+  const variance = Math.max(0, r2Sum / balls.length - rMean * rMean)
+  const rStd = Math.sqrt(variance)
+  const cv = rStd / Math.max(1e-6, rMean)
+  const rangeRatio = rMaxStat / Math.max(1e-6, rMin)
+  const blendCfg =
+    surfaceBlend === 'low'
+      ? { blur: 0.0, inflate: 1.0 }
+      : surfaceBlend === 'high'
+        ? { blur: 0.1, inflate: 1.015 }
+        : { blur: 0.04, inflate: 1.006 }
+  // 球团体积分布差异越大，等值面分辨率越高，避免大小体块交界处“糊掉”
+  const volumeAdaptiveScale = THREE.MathUtils.clamp(1 + cv * 0.55 + (rangeRatio - 1) * 0.08, 1, 1.65)
+  const res = Math.max(28, Math.min(84, Math.round(42 * densityScale * volumeAdaptiveScale)))
+  const mc = new MarchingCubes(res, new THREE.MeshBasicMaterial(), false, false, 240000)
+  mc.isolation = 0
+  mc.reset()
+
+  // 使用“球团并集 SDF”而不是势场求和，尽量保持与原球团体积一致
+  const size = mc.size
+  const field = mc.field
+  field.fill(1e6)
+  const invX = ext.x > 1e-8 ? 1 / ext.x : 0
+  const invY = ext.y > 1e-8 ? 1 / ext.y : 0
+  const invZ = ext.z > 1e-8 ? 1 / ext.z : 0
+  const stepX = ext.x / Math.max(1, size - 1)
+  const stepY = ext.y / Math.max(1, size - 1)
+  const stepZ = ext.z / Math.max(1, size - 1)
+  const inflateBias = THREE.MathUtils.clamp(shellInflate, -0.2, 0.2) * Math.max(1e-6, rMean)
+  for (const b of balls) {
+    const minX = Math.max(0, Math.floor((b.c.x - b.r - min.x) * invX * (size - 1)))
+    const maxX = Math.min(size - 1, Math.ceil((b.c.x + b.r - min.x) * invX * (size - 1)))
+    const minY = Math.max(0, Math.floor((b.c.y - b.r - min.y) * invY * (size - 1)))
+    const maxY = Math.min(size - 1, Math.ceil((b.c.y + b.r - min.y) * invY * (size - 1)))
+    const minZ = Math.max(0, Math.floor((b.c.z - b.r - min.z) * invZ * (size - 1)))
+    const maxZ = Math.min(size - 1, Math.ceil((b.c.z + b.r - min.z) * invZ * (size - 1)))
+    for (let z = minZ; z <= maxZ; z++) {
+      const wz = min.z + z * stepZ
+      const dz = wz - b.c.z
+      const zOff = z * mc.size2
+      for (let y = minY; y <= maxY; y++) {
+        const wy = min.y + y * stepY
+        const dy = wy - b.c.y
+        const yzOff = zOff + y * size
+        for (let x = minX; x <= maxX; x++) {
+          const wx = min.x + x * stepX
+          const dx = wx - b.c.x
+          const sd = Math.sqrt(dx * dx + dy * dy + dz * dz) - (b.r + inflateBias)
+          const idx = yzOff + x
+          if (sd < field[idx]) field[idx] = sd
+        }
+      }
+    }
+  }
+  if (blendCfg.blur > 0) mc.blur(blendCfg.blur)
+  mc.update()
+
+  const vCount = mc.count
+  if (vCount < 3) return null
+  const srcPos = mc.geometry.getAttribute('position')
+  const srcNor = mc.geometry.getAttribute('normal')
+  const pos = new Float32Array(vCount * 3)
+  pos.set(srcPos.array.subarray(0, vCount * 3))
+  const nor = new Float32Array(vCount * 3)
+  nor.set(srcNor.array.subarray(0, vCount * 3))
+
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3))
+
+  const center = min.clone().add(max).multiplyScalar(0.5)
+  g.applyMatrix4(
+    new THREE.Matrix4().compose(
+      center,
+      new THREE.Quaternion(),
+      new THREE.Vector3(ext.x * 0.5, ext.y * 0.5, ext.z * 0.5),
+    ),
+  )
+  g.computeBoundingBox()
+  const gb = g.boundingBox
+  // 体素并集体积估计：以 marching grid 内 sd<=0 的体素数估算体积
+  const voxelVol = stepX * stepY * stepZ
+  let insideCount = 0
+  for (let i = 0; i < field.length; i++) if (field[i] <= 0) insideCount++
+  const targetVolume = Math.max(1e-8, insideCount * voxelVol)
+  let autoMatched = false
+
+  // 暂停任何形状重缩放：优先保证壳体与球团几何关系一致
+  let meshVolume = Math.max(1e-8, computeGeometryVolume(g))
+  let errorPct = Math.abs(meshVolume - targetVolume) / targetVolume * 100
+  if (autoMatchVolume && errorPct > Math.max(0.5, targetErrorPct) && gb && !gb.isEmpty()) {
+    // 二次等比匹配：按体积比修正
+    // 安全阈值内的小步修正，避免再次出现“大球化”
+    const s2 = THREE.MathUtils.clamp(Math.cbrt(targetVolume / meshVolume), 0.97, 1.03)
+    const c = new THREE.Vector3()
+    gb.getCenter(c)
+    const m = new THREE.Matrix4()
+      .makeTranslation(-c.x, -c.y, -c.z)
+      .multiply(new THREE.Matrix4().makeScale(s2, s2, s2))
+      .multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z))
+    g.applyMatrix4(m)
+    autoMatched = true
+    meshVolume = Math.max(1e-8, computeGeometryVolume(g))
+    errorPct = Math.abs(meshVolume - targetVolume) / targetVolume * 100
+  }
+  g.computeVertexNormals()
+  return {
+    geometry: g,
+    metrics: {
+      targetVolume,
+      meshVolume,
+      errorPct,
+      autoMatched,
+    },
+  }
+}
+
+/**
+ * 近似几何体积（非索引三角网格有向体积绝对值）
+ * @param {THREE.BufferGeometry} g
+ */
+function computeGeometryVolume(g) {
+  const p = g.getAttribute('position')
+  if (!p || p.count < 3) return 0
+  let v = 0
+  for (let i = 0; i + 2 < p.count; i += 3) {
+    const ax = p.getX(i)
+    const ay = p.getY(i)
+    const az = p.getZ(i)
+    const bx = p.getX(i + 1)
+    const by = p.getY(i + 1)
+    const bz = p.getZ(i + 1)
+    const cx = p.getX(i + 2)
+    const cy = p.getY(i + 2)
+    const cz = p.getZ(i + 2)
+    // 使用每个三角形四面体体积的绝对值，避免面朝向不一致导致体积抵消
+    const det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)
+    v += Math.abs(det)
+  }
+  return v / 6
 }
 
 function buildQuadruped(p, rng) {
@@ -1426,7 +1687,7 @@ export function buildCreature(params) {
   if (!valid.length) {
     const g = new THREE.Group()
     g.name = 'Creature'
-    return { group: g, stats: { parts: 0, bones: 0 } }
+    return { group: g, stats: { parts: 0, bones: 0, volumeErrorPct: null, volumeAutoMatched: false } }
   }
 
   const group = new THREE.Group()
@@ -1444,12 +1705,15 @@ export function buildCreature(params) {
     applySkinToGeometry(geo, orderedBones, armature)
   }
 
-  const merged = mergeGeometries(valid, false)
+  let merged = mergeGeometries(valid, false)
   for (const g of valid) g.dispose()
 
   if (!merged) {
     return { group, stats: { parts: valid.length, bones: bones.length } }
   }
+
+  // 合并后焊接重合顶点，减少可见缝隙（非布尔并集，但可提升连续观感）
+  merged = mergeVertices(merged, 1e-4)
 
   merged.computeVertexNormals()
 
@@ -1464,6 +1728,9 @@ export function buildCreature(params) {
     roughness: 0.78,
     metalness: 0.06,
     flatShading: false,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true,
   })
   const skinnedMesh = new THREE.SkinnedMesh(merged, mat)
   skinnedMesh.name = 'CreatureBody'
@@ -1487,6 +1754,7 @@ export function buildCreature(params) {
     group.position.y += GROUND_PAD - bbox.min.y
   }
   group.userData.groundOffsetY = group.position.y
+  if (result.generationMeta) group.userData.generationMeta = result.generationMeta
 
   group.updateMatrixWorld(true)
   attachRagdollShapeExtentsFromSkin(skinnedMesh, orderedBones, armature)
@@ -1494,6 +1762,11 @@ export function buildCreature(params) {
 
   return {
     group,
-    stats: { parts: valid.length, bones: bones.length },
+    stats: {
+      parts: valid.length,
+      bones: bones.length,
+      volumeErrorPct: result.generationMeta?.volumeErrorPct ?? null,
+      volumeAutoMatched: result.generationMeta?.volumeAutoMatched ?? false,
+    },
   }
 }
