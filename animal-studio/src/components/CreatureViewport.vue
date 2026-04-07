@@ -522,7 +522,22 @@ async function exportCreatureZip() {
   }
 }
 
-defineExpose({ rebuildCreature, fitCameraToCreature, exportCreatureZip, selectByPath })
+async function captureScreenshotToClipboard() {
+  const renderer = rendererRef.value
+  const scene = sceneRef.value
+  const camera = cameraRef.value
+  const canvas = canvasRef.value
+  if (!renderer || !scene || !camera || !canvas) throw new Error('视口尚未就绪')
+  renderer.render(scene, camera)
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+  if (!blob) throw new Error('截图失败：无法生成图片')
+  if (!navigator?.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('当前环境不支持写入图片到剪贴板（需 HTTPS 或支持 Clipboard API 的环境）')
+  }
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+}
+
+defineExpose({ rebuildCreature, fitCameraToCreature, exportCreatureZip, captureScreenshotToClipboard, selectByPath })
 
 onMounted(() => {
   const canvas = canvasRef.value

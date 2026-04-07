@@ -138,6 +138,15 @@ function exportCreatureZip() {
   viewportRef.value?.exportCreatureZip?.()
 }
 
+async function screenshotToClipboard() {
+  try {
+    await viewportRef.value?.captureScreenshotToClipboard?.()
+    alert('截图已复制到剪贴板，可直接粘贴给 AI。')
+  } catch (e) {
+    alert('截图失败：' + (e?.message || String(e)))
+  }
+}
+
 function onStats(s) {
   stats.value = s
 }
@@ -212,6 +221,9 @@ function selectHierarchyNode(node) {
           @click="ragdollEnabled = !ragdollEnabled"
         >
           物理布娃娃
+        </button>
+        <button type="button" class="menu-btn" title="截图到剪贴板（PNG）" @click="screenshotToClipboard">
+          截图到剪贴板
         </button>
         <button type="button" class="menu-btn" title="适配视图（无全局快捷键）" @click="fitView">适配视图</button>
       </nav>

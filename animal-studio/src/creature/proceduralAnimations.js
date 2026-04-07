@@ -187,6 +187,18 @@ function applyQuadrupedJoints(armature, id, tSec) {
       boneRot(armature, 'Tail_tip', 0, 0, Math.sin(w * 1.1 + 0.4) * 0.18)
       break
     }
+    case 'horseWalk': {
+      // 马步：四拍节律，前后肢摆幅稍大，颈与头做更平稳点头
+      const w = ph * 0.86
+      applyQuadrupedLegs(armature, id, tSec, w + Math.PI * 0.16, 0.44, 0.36, 0.5, 0.44)
+      boneRot(armature, 'Lumbar', Math.sin(w * 0.52) * 0.06, 0, Math.sin(w * 0.47) * 0.03)
+      boneRot(armature, 'Thoracic', Math.sin(w * 0.5 + 0.25) * 0.05, 0, 0)
+      boneRot(armature, 'Cervical', -Math.abs(Math.sin(w * 1.8)) * 0.08 + 0.02, 0, 0)
+      boneRot(armature, 'Skull', Math.sin(w * 0.9 + 0.8) * 0.05, 0, 0)
+      boneRot(armature, 'Tail_base', 0, 0, Math.sin(w * 0.95) * 0.1)
+      boneRot(armature, 'Tail_tip', 0, 0, Math.sin(w * 1.18 + 0.45) * 0.15)
+      break
+    }
     case 'run': {
       const w = ph * 2.05
       applyQuadrupedLegs(armature, id, tSec, w, 0.55, 0.48, 0.55, 0.5)
@@ -369,6 +381,7 @@ export const CREATURE_ANIMATIONS = [
   { id: 'none', label: '无' },
   { id: 'idle', label: '待机' },
   { id: 'walk', label: '走路' },
+  { id: 'horseWalk', label: '马步' },
   { id: 'run', label: '跑步' },
   { id: 'wingFlap', label: '扑翼' },
   { id: 'glide', label: '滑翔' },
@@ -402,6 +415,17 @@ export function sampleCreatureAnimation(id, tSec, kind = 'biped') {
         rx: Math.sin(ph) * 0.05 * tiltM,
         ry: Math.sin(ph * 0.35) * 0.02,
         rz: Math.sin(ph * 0.5) * 0.035 * swayM,
+      }
+    }
+    case 'horseWalk': {
+      const ph = tSec * Math.PI * 2 * 0.86
+      return {
+        px: Math.sin(ph) * 0.048 * swayM,
+        py: Math.abs(Math.sin(ph * 2)) * 0.022 * bobM,
+        pz: 0,
+        rx: Math.sin(ph) * 0.042 * tiltM,
+        ry: Math.sin(ph * 0.3) * 0.016,
+        rz: Math.sin(ph * 0.52) * 0.028 * swayM,
       }
     }
     case 'run': {

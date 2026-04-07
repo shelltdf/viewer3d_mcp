@@ -637,6 +637,7 @@ function buildQuadruped(p, rng) {
   const geoms = []
   /** @type {BoneJoint[]} */
   const bones = []
+  const isHorse = p.subspecies === 'horse'
   const s = p.scale
   const bl = p.bodyLength * s
   const bh = p.bodyHeight * s
@@ -645,13 +646,18 @@ function buildQuadruped(p, rng) {
   const hs = p.headSize * s
   const tl = p.tailLen * s
 
-  const bodyC = new THREE.Vector3(0, ll + bh * 0.5, 0)
+  const bodyC = new THREE.Vector3(0, ll + bh * (isHorse ? 0.56 : 0.5), 0)
   /** 躯干：桶状椭球，Z 头尾向长于 X 肩宽，轮廓接近四足躯干 */
-  const bodyW = bl * 0.52
-  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * 0.51, bl * 0.48))
+  const bodyW = bl * (isHorse ? 0.46 : 0.52)
+  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * (isHorse ? 0.57 : 0.51), bl * (isHorse ? 0.53 : 0.48)))
+  if (isHorse) {
+    // 马：肩隆与臀峰，减少“圆桶身”观感
+    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y + bh * 0.2, bl * 0.16), bodyW * 0.44, bh * 0.25, bl * 0.2))
+    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y + bh * 0.12, -bl * 0.18), bodyW * 0.48, bh * 0.23, bl * 0.24))
+  }
 
-  const stanceX = Math.min(0.45, Math.max(0.24, Number(p.quadStanceX) || 0.35))
-  const stanceZ = Math.min(0.32, Math.max(0.12, Number(p.quadStanceZ) || 0.2))
+  const stanceX = Math.min(0.45, Math.max(0.24, Number(p.quadStanceX) || (isHorse ? 0.34 : 0.35)))
+  const stanceZ = Math.min(0.34, Math.max(0.12, Number(p.quadStanceZ) || (isHorse ? 0.24 : 0.2)))
   const xo = bl * stanceX
   const zo = bl * stanceZ
   const hips = [
@@ -660,7 +666,10 @@ function buildQuadruped(p, rng) {
     new THREE.Vector3(-xo, ll, -zo),
     new THREE.Vector3(xo, ll, -zo),
   ]
-  const paws = hips.map((h) => h.clone().add(new THREE.Vector3(rng() * 0.04 - 0.02, -ll * 0.95, rng() * 0.04 - 0.02)))
+  const paws = hips.map((h, i) => {
+    const fwd = i < 2 ? 0.035 : -0.02
+    return h.clone().add(new THREE.Vector3(rng() * 0.028 - 0.014, -ll * (isHorse ? 0.98 : 0.95), fwd + rng() * 0.02 - 0.01))
+  })
   const lr = bh * 0.22
 
   const qDef = Math.min(0.65, Math.max(0.44, Number(p.quadKneeAlongLeg) || 0.52))
@@ -669,18 +678,26 @@ function buildQuadruped(p, rng) {
   const quadKneeFront = Math.min(0.66, Math.max(0.44, Number.isFinite(qF) ? qF : qDef))
   const quadKneeHind = Math.min(0.7, Math.max(0.44, Number.isFinite(qH) ? qH : qDef))
 
-  /** 上/下肢段：圆锥台近肩髋粗、远蹄细，更接近真实肢干锥度 */
+  /** 上/下肢段：马使用三段（上肢/掌跖骨/蹄前段），其它仍二段。 */
   for (let i = 0; i < 4; i++) {
     const t = i < 2 ? quadKneeFront : quadKneeHind
     const kneePt = vecLerp(hips[i], paws[i], t)
-    geoms.push(limbCylinder(hips[i], kneePt, lr * 1.14, lr * 0.78))
-    geoms.push(limbCylinder(kneePt, paws[i], lr * 0.78, lr * 0.48))
+    if (isHorse) {
+      const fetlockT = i < 2 ? 0.84 : 0.88
+      const fetlock = vecLerp(kneePt, paws[i], fetlockT)
+      geoms.push(limbCylinder(hips[i], kneePt, lr * 1.06, lr * 0.72))
+      geoms.push(limbCylinder(kneePt, fetlock, lr * 0.7, lr * 0.42))
+      geoms.push(limbCylinder(fetlock, paws[i], lr * 0.42, lr * 0.3))
+    } else {
+      geoms.push(limbCylinder(hips[i], kneePt, lr * 1.14, lr * 0.78))
+      geoms.push(limbCylinder(kneePt, paws[i], lr * 0.78, lr * 0.48))
+    }
   }
 
   /** 蹄 / 掌：贴地扁盒，略沿肢方向前伸，避免圆柱悬空像无蹄 */
-  const hoofH = Math.max(0.018, lr * 0.4)
-  const hoofLen = lr * 0.88
-  const hoofW = lr * 0.62
+  const hoofH = Math.max(0.018, lr * (isHorse ? 0.34 : 0.4))
+  const hoofLen = lr * (isHorse ? 0.68 : 0.88)
+  const hoofW = lr * (isHorse ? 0.48 : 0.62)
   for (let i = 0; i < 4; i++) {
     const legDir = new THREE.Vector3().subVectors(paws[i], hips[i])
     legDir.y = 0
@@ -689,22 +706,29 @@ function buildQuadruped(p, rng) {
     const cc = paws[i].clone().addScaledVector(legDir, hoofLen * 0.14)
     cc.y = hoofH * 0.5
     geoms.push(box(cc, hoofW, hoofH, hoofLen))
+    if (isHorse) {
+      geoms.push(cone(cc.clone().add(new THREE.Vector3(0, hoofH * 0.15, hoofLen * 0.1)), hoofW * 0.42, hoofLen * 0.36, new THREE.Vector3(0, -0.08, 1)))
+    }
   }
 
-  const neckFwd = Math.min(0.44, Math.max(0.16, Number(p.quadNeckForward) || 0.32))
+  const neckFwd = Math.min(0.48, Math.max(0.16, Number(p.quadNeckForward) || (isHorse ? 0.38 : 0.32)))
   const tailZf = Math.min(0.44, Math.max(0.16, Number(p.quadTailZ) || 0.32))
-  const neckBase = new THREE.Vector3(0, ll + bh * 0.65, bl * neckFwd)
-  const headC = neckBase.clone().add(new THREE.Vector3(0, nk * 0.3, nk + hs))
-  const neckTop = headC.clone().add(new THREE.Vector3(0, -hs * 0.36, -hs * 0.2))
-  const neckMid = vecLerp(neckBase, neckTop, 0.52)
-  geoms.push(limbCylinder(neckBase, neckMid, lr * 0.86, lr * 0.64))
-  geoms.push(limbCylinder(neckMid, neckTop, lr * 0.64, lr * 0.46))
+  const neckBase = new THREE.Vector3(0, ll + bh * (isHorse ? 0.74 : 0.65), bl * neckFwd)
+  const headC = neckBase.clone().add(new THREE.Vector3(0, nk * (isHorse ? 0.22 : 0.3), nk + hs * (isHorse ? 1.18 : 1)))
+  const neckTop = headC.clone().add(new THREE.Vector3(0, -hs * (isHorse ? 0.24 : 0.36), -hs * (isHorse ? 0.08 : 0.2)))
+  const neckMid = vecLerp(neckBase, neckTop, isHorse ? 0.58 : 0.52)
+  geoms.push(limbCylinder(neckBase, neckMid, lr * (isHorse ? 0.92 : 0.86), lr * (isHorse ? 0.66 : 0.64)))
+  geoms.push(limbCylinder(neckMid, neckTop, lr * (isHorse ? 0.66 : 0.64), lr * (isHorse ? 0.42 : 0.46)))
   /** 头：椭球沿头尾向略长，示意颅+吻粗轮廓 */
-  geoms.push(ellipsoid(headC, hs * 0.5, hs * 0.9, hs * 1.1))
+  geoms.push(ellipsoid(headC, hs * (isHorse ? 0.43 : 0.5), hs * (isHorse ? 0.82 : 0.9), hs * (isHorse ? 1.45 : 1.1)))
+  if (isHorse) {
+    const muzzle = headC.clone().add(new THREE.Vector3(0, -hs * 0.1, hs * 0.75))
+    geoms.push(cone(muzzle, hs * 0.24, hs * 0.7, new THREE.Vector3(0, -0.05, 1)))
+  }
 
-  const tailStart = new THREE.Vector3(0, ll + bh * 0.55, -bl * tailZf)
+  const tailStart = new THREE.Vector3(0, ll + bh * (isHorse ? 0.64 : 0.55), -bl * tailZf)
   const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.08 - 0.04, tl * 0.15, -tl))
-  geoms.push(limbCylinder(tailStart, tailEnd, lr * 0.55, lr * 0.25))
+  geoms.push(limbCylinder(tailStart, tailEnd, lr * (isHorse ? 0.46 : 0.55), lr * 0.25))
 
   /** 水平躯干脊椎动物：骨盆（骶髂/后肢附着）→腰椎→胸椎→颈椎→颅骨；前肢肱骨-桡尺-掌指，后肢股骨-胫骨-跖趾；尾自骨盆向尾端 */
   const pelvisP = new THREE.Vector3(0, ll + bh * 0.22, -zo * 0.9)
