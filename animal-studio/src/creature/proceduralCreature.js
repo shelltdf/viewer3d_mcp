@@ -680,10 +680,10 @@ function buildHorseQuadruped(p, rng) {
   // leg anchors
   const shoulderX = bl * 0.155
   const hipX = bl * 0.17
-  const sternumOffsetZ = 0.3
-  const pelvisOffsetZ = 0.3
-  const frontZ = bl * 0.28 + sternumOffsetZ
-  const hindZ = -bl * 0.27 - 0.5 + pelvisOffsetZ
+  const sternumOffsetZ = bl * 0.08
+  const pelvisOffsetZ = bl * 0.02
+  const frontZ = bl * 0.26 + sternumOffsetZ
+  const hindZ = -bl * 0.31 + pelvisOffsetZ
 
   const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
   const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
@@ -695,9 +695,9 @@ function buildHorseQuadruped(p, rng) {
 
   function frontLegPoints(shoulder, sideSign) {
     const hoof = new THREE.Vector3(
-      shoulder.x + sideSign * 0.01 + rng() * 0.015 - 0.0075,
+      shoulder.x + sideSign * 0.008 + rng() * 0.008 - 0.004,
       0,
-      shoulder.z + 0.045 + rng() * 0.012 - 0.006,
+      shoulder.z + 0.04 + rng() * 0.008 - 0.004,
     )
     const elbow = vecLerp(shoulder, hoof, 0.32)
     const carpus = vecLerp(shoulder, hoof, 0.62)
@@ -707,9 +707,9 @@ function buildHorseQuadruped(p, rng) {
 
   function hindLegPoints(hip, sideSign) {
     const hoof = new THREE.Vector3(
-      hip.x + sideSign * 0.012 + rng() * 0.015 - 0.0075,
+      hip.x + sideSign * 0.008 + rng() * 0.008 - 0.004,
       0,
-      hip.z - 0.05 + rng() * 0.012 - 0.006,
+      hip.z - 0.038 + rng() * 0.008 - 0.004,
     )
     // 马后肢：股骨向前到膝(髌)；胫骨向后下到飞节；管骨近似垂直到系部
     const stifle = vecLerp(hip, hoof, 0.34)
@@ -759,10 +759,10 @@ function buildHorseQuadruped(p, rng) {
   }
 
   // neck / head
-  const neckBase = new THREE.Vector3(0, withersY + bh * 0.05, bl * 0.4 + sternumOffsetZ)
-  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.42, nk * 0.38))
-  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.1, nk * 0.48))
-  const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.02, hs * 0.68))
+  const neckBase = new THREE.Vector3(0, withersY + bh * 0.08, bl * 0.28 + sternumOffsetZ)
+  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.52, nk * 0.28))
+  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.14, nk * 0.42))
+  const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.06, hs * 0.62))
   geoms.push(limbCylinder(neckBase, neckMid, lr * 0.95, lr * 0.62))
   geoms.push(limbCylinder(neckMid, headBase, lr * 0.62, lr * 0.35))
   geoms.push(ellipsoid(headC, hs * 0.4, hs * 0.76, hs * 1.58))
@@ -772,7 +772,7 @@ function buildHorseQuadruped(p, rng) {
   geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, -hs * 0.22, hs * 0.25)), hs * 0.26, hs * 0.16, hs * 0.44))
 
   // tail
-  const tailStart = new THREE.Vector3(0, croupY + bh * 0.04, hindZ - bl * 0.08)
+  const tailStart = new THREE.Vector3(0, croupY + bh * 0.03, hindZ - bl * 0.11)
   const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.05 - 0.025, -tl * 0.48, -tl * 0.82))
   geoms.push(limbCylinder(tailStart, tailEnd, lr * 0.42, lr * 0.2))
 
@@ -851,10 +851,10 @@ function buildHorseZBrushLike(p, rng) {
   const bodyW = bl * 0.42
   const shoulderX = bl * 0.155
   const hipX = bl * 0.17
-  const sternumOffsetZ = 0.3
-  const pelvisOffsetZ = 0.3
-  const frontZ = bl * 0.28 + sternumOffsetZ
-  const hindZ = -bl * 0.27 - 0.5 + pelvisOffsetZ
+  const sternumOffsetZ = bl * 0.08
+  const pelvisOffsetZ = bl * 0.02
+  const frontZ = bl * 0.26 + sternumOffsetZ
+  const hindZ = -bl * 0.31 + pelvisOffsetZ
   const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
   const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.24, frontZ + bl * 0.01)
   const scapL = shL.clone().add(new THREE.Vector3(-bl * 0.012, bh * 0.22, -bl * 0.05))
@@ -885,9 +885,9 @@ function buildHorseZBrushLike(p, rng) {
 
   function frontLegPoints(shoulder, sideSign) {
     const hoof = new THREE.Vector3(
-      shoulder.x + sideSign * 0.01 + rng() * 0.015 - 0.0075,
+      shoulder.x + sideSign * 0.008 + rng() * 0.008 - 0.004,
       0,
-      shoulder.z + 0.045 + rng() * 0.012 - 0.006,
+      shoulder.z + 0.04 + rng() * 0.008 - 0.004,
     )
     const elbow = vecLerp(shoulder, hoof, 0.32)
     const carpus = vecLerp(shoulder, hoof, 0.62)
@@ -896,9 +896,9 @@ function buildHorseZBrushLike(p, rng) {
   }
   function hindLegPoints(hip, sideSign) {
     const hoof = new THREE.Vector3(
-      hip.x + sideSign * 0.012 + rng() * 0.015 - 0.0075,
+      hip.x + sideSign * 0.008 + rng() * 0.008 - 0.004,
       0,
-      hip.z - 0.05 + rng() * 0.012 - 0.006,
+      hip.z - 0.038 + rng() * 0.008 - 0.004,
     )
     const stifle = vecLerp(hip, hoof, 0.34)
     stifle.y += ll * 0.11
@@ -914,12 +914,12 @@ function buildHorseZBrushLike(p, rng) {
   const fr = frontLegPoints(shR, 1)
   const blg = hindLegPoints(hipL, -1)
   const brg = hindLegPoints(hipR, 1)
-  const neckBase = new THREE.Vector3(0, withersY + bh * 0.05, bl * 0.4 + sternumOffsetZ)
-  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.42, nk * 0.38))
-  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.1, nk * 0.48))
-  const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.02, hs * 0.68))
+  const neckBase = new THREE.Vector3(0, withersY + bh * 0.08, bl * 0.28 + sternumOffsetZ)
+  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.52, nk * 0.28))
+  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.14, nk * 0.42))
+  const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.06, hs * 0.62))
   const muzzle = headC.clone().add(new THREE.Vector3(0, -hs * 0.1, hs * 0.74))
-  const tailStart = new THREE.Vector3(0, croupY + bh * 0.04, hindZ - bl * 0.08)
+  const tailStart = new THREE.Vector3(0, croupY + bh * 0.03, hindZ - bl * 0.11)
   const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.05 - 0.025, -tl * 0.48, -tl * 0.82))
 
   function blobChainAdaptive(a, b, r0, r1, density = 1) {
@@ -954,6 +954,8 @@ function buildHorseZBrushLike(p, rng) {
   addEllipsoidBalls(new THREE.Vector3(bodyW * 0.23, ll + bh * 0.5, -bl * 0.2), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
   addEllipsoidBalls(new THREE.Vector3(0, withersY + bh * 0.08, bl * 0.18 + sternumOffsetZ), bodyW * 0.18, bh * 0.14, bl * 0.14, 3, 0.95)
   addEllipsoidBalls(new THREE.Vector3(0, ll + bh * 0.63, -bl * 0.08), bodyW * 0.24, bh * 0.12, bl * 0.22, 3, 0.95)
+  addEllipsoidBalls(new THREE.Vector3(0, ll + bh * 0.68, bl * 0.17 + sternumOffsetZ), bodyW * 0.22, bh * 0.16, bl * 0.16, 4, 0.97)
+  addEllipsoidBalls(new THREE.Vector3(0, ll + bh * 0.62, -bl * 0.27), bodyW * 0.26, bh * 0.18, bl * 0.16, 4, 0.97)
 
   const lr = bh * 0.19
   blobChainAdaptive(scapL, fl.shoulder, lr * 0.88, lr * 0.72, 0.9)

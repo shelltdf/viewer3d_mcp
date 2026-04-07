@@ -45,7 +45,8 @@ function applyQuadrupedLegs(
   kneeF,
 ) {
   const swingH = (leg) => Math.sin(ph + (leg === 'FL' || leg === 'BR' ? 0 : Math.PI)) * ampHind
-  const swingF = (leg) => Math.sin(ph + (leg === 'FR' || leg === 'BL' ? 0 : Math.PI)) * ampFront
+  // 前肢与后肢采用对角同相，避免同侧顺拐（pace）
+  const swingF = (leg) => Math.sin(ph + (leg === 'FL' || leg === 'BR' ? 0 : Math.PI)) * ampFront
   for (const leg of ['BL', 'BR']) {
     const s = swingH(leg)
     boneRot(armature, `Femur_${leg}`, s, 0, 0)
