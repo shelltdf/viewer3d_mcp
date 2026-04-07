@@ -414,8 +414,10 @@ export function defaultCreatureParams(kind) {
     showSkeleton: true,
     /** SkinnedMesh；与视口 / Dock 共用 */
     showCreatureModel: true,
+    /** 每关节 hitbox（JointHitboxes） */
+    showCreatureHitbox: false,
     /** 布娃娃碰撞调试线框；与视口 / Dock 共用 */
-    showCreaturePhysics: true,
+    showCreaturePhysics: false,
   }
   const extras = {
     biped: {
@@ -458,7 +460,7 @@ export function defaultCreatureParams(kind) {
 }
 
 /** 仅视口图层，不改变几何；`CreatureViewport` 用其区分「重建网格」与「只更新显示」 */
-export const CREATURE_DISPLAY_PARAM_KEYS = ['showSkeleton', 'showCreatureModel', 'showCreaturePhysics']
+export const CREATURE_DISPLAY_PARAM_KEYS = ['showSkeleton', 'showCreatureModel', 'showCreatureHitbox', 'showCreaturePhysics']
 
 /**
  * 去掉图层字段后的快照，用于判断是否需要 `buildCreature`。
@@ -472,6 +474,52 @@ export function creatureGeometryFingerprint(params) {
   } catch {
     return String(Math.random())
   }
+}
+
+/**
+ * 统计每根骨的主导顶点数量与平均主导权重（用于 UI 信息面板）。
+ * @param {THREE.SkinnedMesh} skinnedMesh
+ * @param {THREE.Bone[]} orderedBones
+ */
+function computeBoneWeightStats(skinnedMesh, orderedBones) {
+  const out = {}
+  const geom = skinnedMesh.geometry
+  const skinIdx = geom.getAttribute('skinIndex')
+  const skinW = geom.getAttribute('skinWeight')
+  if (!skinIdx || !skinW) return out
+  for (const b of orderedBones) {
+    out[b.name] = { dominantVertexCount: 0, avgDominantWeight: 0 }
+  }
+  for (let i = 0; i < skinIdx.count; i++) {
+    const w0 = skinW.getX(i)
+    const w1 = skinW.getY(i)
+    const w2 = skinW.getZ(i)
+    const w3 = skinW.getW(i)
+    let slot = 0
+    let w = w0
+    if (w1 > w) {
+      w = w1
+      slot = 1
+    }
+    if (w2 > w) {
+      w = w2
+      slot = 2
+    }
+    if (w3 > w) {
+      w = w3
+      slot = 3
+    }
+    const bi = slot === 0 ? skinIdx.getX(i) : slot === 1 ? skinIdx.getY(i) : slot === 2 ? skinIdx.getZ(i) : skinIdx.getW(i)
+    const bone = orderedBones[bi]
+    if (!bone) continue
+    const rec = out[bone.name]
+    rec.dominantVertexCount += 1
+    rec.avgDominantWeight += w
+  }
+  for (const rec of Object.values(out)) {
+    if (rec.dominantVertexCount > 0) rec.avgDominantWeight /= rec.dominantVertexCount
+  }
+  return out
 }
 
 /**
@@ -1080,6 +1128,7 @@ export function buildCreature(params) {
 
   group.updateMatrixWorld(true)
   attachRagdollShapeExtentsFromSkin(skinnedMesh, orderedBones, armature)
+  group.userData.boneWeightStats = computeBoneWeightStats(skinnedMesh, orderedBones)
 
   return {
     group,

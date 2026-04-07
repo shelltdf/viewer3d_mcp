@@ -7,11 +7,14 @@ import * as THREE from 'three'
 import {
   Body,
   Box,
+  ConeTwistConstraint,
   ContactMaterial,
+  Cylinder,
+  HingeConstraint,
   Material,
   Plane,
-  PointToPointConstraint,
   Quaternion as CQuaternion,
+  Sphere,
   Vec3,
   World,
 } from 'cannon-es'
@@ -33,6 +36,47 @@ function boneHalfThickness(boneName, baseR) {
   if (/Hand|Foot|Paw|Tip|Eye|Beak|Snout/i.test(n)) m = 0.62
   if (/Tail/i.test(n)) m = 0.82
   return Math.max(0.006, baseR * m)
+}
+
+/**
+ * 父子关节约束：膝/肘用 Hinge，其余用 ConeTwist（都带 pivot）。
+ * 仅用 PointToPoint 会过软，容易出现大幅扭转和甩动。
+ */
+function createJointConstraint(parentBody, childBody, pivotA, pivotB, childBoneName) {
+  const n = childBoneName || ''
+  if (/Tibia|RadiusUlna/i.test(n)) {
+    // 膝/肘：单轴弯曲
+    const h = new HingeConstraint(parentBody, childBody, {
+      pivotA,
+      pivotB,
+      axisA: new Vec3(1, 0, 0),
+      axisB: new Vec3(1, 0, 0),
+      maxForce: 1e10,
+      collideConnected: false,
+    })
+    return h
+  }
+
+  // 其余关节：限制摆角与扭转
+  let angle = 0.72
+  let twist = 0.32
+  if (/Skull|Head|Cervical|Neck/i.test(n)) {
+    angle = 0.5
+    twist = 0.25
+  } else if (/Foot|Hand|Paw/i.test(n)) {
+    angle = 0.42
+    twist = 0.2
+  }
+  return new ConeTwistConstraint(parentBody, childBody, {
+    pivotA,
+    pivotB,
+    axisA: new Vec3(0, 1, 0),
+    axisB: new Vec3(0, 1, 0),
+    angle,
+    twistAngle: twist,
+    maxForce: 1e10,
+    collideConnected: false,
+  })
 }
 
 /**
@@ -64,6 +108,8 @@ export function createRagdoll(scene, creatureRoot) {
     mass: 0,
     material: matGround,
   })
+  groundBody.collisionFilterGroup = 1
+  groundBody.collisionFilterMask = -1
   groundBody.addShape(new Plane())
   groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0, 'XYZ')
   groundBody.position.set(0, 0, 0)
@@ -71,6 +117,7 @@ export function createRagdoll(scene, creatureRoot) {
 
   /** @type {Map<THREE.Bone, Body>} */
   const boneToBody = new Map()
+  const boneBodyInfo = {}
   const constraints = []
   const p0 = new THREE.Vector3()
   const p1 = new THREE.Vector3()
@@ -78,6 +125,10 @@ export function createRagdoll(scene, creatureRoot) {
   const mid = new THREE.Vector3()
   const dir = new THREE.Vector3()
   const threeQ = new THREE.Quaternion()
+  const _cTmp = new Vec3()
+  const _cWorld = new Vec3()
+  const cylToY = new CQuaternion()
+  cylToY.setFromEuler(0, 0, Math.PI / 2, 'XYZ')
 
   for (const bone of bones) {
     const parent = bone.parent
@@ -124,7 +175,8 @@ export function createRagdoll(scene, creatureRoot) {
       halfX = r
       halfZ = r
     }
-    const shape = new Box(new Vec3(halfX, halfY, halfZ))
+    const rad = Math.max(0.006, Math.min(halfX, halfZ) * 0.93)
+    const segHalf = Math.max(0.001, halfY * 0.9 - rad)
 
     const body = new Body({
       mass: useStatic ? 0 : 0.38,
@@ -134,12 +186,30 @@ export function createRagdoll(scene, creatureRoot) {
       position: new Vec3(mid.x, mid.y, mid.z),
       quaternion: cq,
     })
-    body.addShape(shape)
+    body.collisionFilterGroup = 2
+    body.collisionFilterMask = 1
+    if (segHalf > 0.002) {
+      const cyl = new Cylinder(rad, rad, segHalf * 2, 10)
+      body.addShape(cyl, new Vec3(0, 0, 0), cylToY)
+      body.addShape(new Sphere(rad), new Vec3(0, segHalf, 0))
+      body.addShape(new Sphere(rad), new Vec3(0, -segHalf, 0))
+    } else {
+      body.addShape(new Sphere(Math.max(rad, halfY * 0.9)))
+    }
     world.addBody(body)
 
     bone.userData._ragBody = body
     bone.userData._ragLen = length
+    body.pointToLocalFrame(new Vec3(p1.x, p1.y, p1.z), _cTmp)
+    bone.userData._ragLocalHead = { x: _cTmp.x, y: _cTmp.y, z: _cTmp.z }
     boneToBody.set(bone, body)
+    boneBodyInfo[bone.name] = {
+      shape: segHalf > 0.002 ? 'capsule' : 'sphere',
+      radius: rad,
+      segmentHalf: segHalf,
+      halfExtents: { x: halfX, y: halfY, z: halfZ },
+      mass: body.mass,
+    }
 
     if (parent?.isBone) {
       bone.getWorldPosition(jw)
@@ -147,7 +217,7 @@ export function createRagdoll(scene, creatureRoot) {
       const pivotB = new Vec3()
       boneToBody.get(parent).pointToLocalFrame(new Vec3(jw.x, jw.y, jw.z), pivotA)
       body.pointToLocalFrame(new Vec3(jw.x, jw.y, jw.z), pivotB)
-      const c = new PointToPointConstraint(boneToBody.get(parent), pivotA, body, pivotB, 1e10)
+      const c = createJointConstraint(boneToBody.get(parent), body, pivotA, pivotB, bone.name)
       constraints.push(c)
       world.addConstraint(c)
     }
@@ -163,9 +233,17 @@ export function createRagdoll(scene, creatureRoot) {
     if (!b) continue
     for (let i = 0; i < b.shapes.length; i++) {
       const sh = b.shapes[i]
-      if (!(sh instanceof Box)) continue
-      const half = sh.halfExtents
-      const geo = new THREE.BoxGeometry(half.x * 2, half.y * 2, half.z * 2)
+      let geo = null
+      if (sh instanceof Box) {
+        const half = sh.halfExtents
+        geo = new THREE.BoxGeometry(half.x * 2, half.y * 2, half.z * 2)
+      } else if (sh instanceof Sphere) {
+        geo = new THREE.SphereGeometry(sh.radius, 10, 8)
+      } else if (sh instanceof Cylinder) {
+        geo = new THREE.CylinderGeometry(sh.radiusTop, sh.radiusBottom, sh.height, sh.numSegments)
+      } else {
+        continue
+      }
       const edges = new THREE.EdgesGeometry(geo)
       geo.dispose()
       const line = new THREE.LineSegments(
@@ -178,6 +256,11 @@ export function createRagdoll(scene, creatureRoot) {
         }),
       )
       line.name = `RagWire_${bone.name}_${i}`
+      line.userData.pickInfo = {
+        type: 'physics-hitbox',
+        boneName: bone.name,
+        shape: sh instanceof Sphere ? 'sphere' : sh instanceof Cylinder ? 'cylinder' : 'box',
+      }
       const ox = b.shapeOffsets[i]?.x ?? 0
       const oy = b.shapeOffsets[i]?.y ?? 0
       const oz = b.shapeOffsets[i]?.z ?? 0
@@ -237,10 +320,17 @@ export function createRagdoll(scene, creatureRoot) {
       const body = bone.userData._ragBody
       if (!body) continue
       const len = bone.userData._ragLen
-      _center.set(body.position.x, body.position.y, body.position.z)
       const qw = new THREE.Quaternion(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w)
-      _yAxis.set(0, 1, 0).applyQuaternion(qw)
-      _jointWorld.copy(_center).addScaledVector(_yAxis, len * 0.5)
+      const lh = bone.userData._ragLocalHead
+      if (lh && Number.isFinite(lh.x) && Number.isFinite(lh.y) && Number.isFinite(lh.z)) {
+        _cTmp.set(lh.x, lh.y, lh.z)
+        body.pointToWorldFrame(_cTmp, _cWorld)
+        _jointWorld.set(_cWorld.x, _cWorld.y, _cWorld.z)
+      } else {
+        _center.set(body.position.x, body.position.y, body.position.z)
+        _yAxis.set(0, 1, 0).applyQuaternion(qw)
+        _jointWorld.copy(_center).addScaledVector(_yAxis, len * 0.5)
+      }
 
       const par = bone.parent
       if (!par) continue
@@ -272,6 +362,7 @@ export function createRagdoll(scene, creatureRoot) {
     for (const bone of bones) {
       delete bone.userData._ragBody
       delete bone.userData._ragLen
+      delete bone.userData._ragLocalHead
     }
   }
 
@@ -284,5 +375,6 @@ export function createRagdoll(scene, creatureRoot) {
     syncBonesFromPhysics,
     syncBodiesFromBones,
     updateWireframes,
+    boneBodyInfo,
   }
 }

@@ -35,6 +35,10 @@ function readLsNum(key, d, min, max) {
 const params = reactive(defaultCreatureParams('quadruped'))
 const viewportRef = ref(null)
 const stats = ref({ parts: 0, bones: 0 })
+const hierarchyTree = ref([])
+const selectedText = ref('未选择对象')
+const selectedPath = ref('')
+const expandedTree = reactive({})
 
 const subspeciesOptions = computed(() => CREATURE_SUBSPECIES[params.kind] ?? [])
 
@@ -136,6 +140,46 @@ function exportCreatureZip() {
 
 function onStats(s) {
   stats.value = s
+}
+
+function onHierarchy(tree) {
+  hierarchyTree.value = Array.isArray(tree) ? tree : []
+  function mark(nodes) {
+    for (const n of nodes || []) {
+      if (expandedTree[n.id] == null) expandedTree[n.id] = n.depth == null ? true : n.depth < 1
+      if (n.children?.length) mark(n.children)
+    }
+  }
+  mark(hierarchyTree.value)
+}
+
+function onSelection(sel) {
+  selectedPath.value = sel?.path || ''
+  selectedText.value = sel?.text || '未选择对象'
+}
+
+const flatHierarchy = computed(() => {
+  const out = []
+  function walk(nodes, depth) {
+    for (const n of nodes || []) {
+      out.push({ ...n, depth })
+      if (n.children?.length && expandedTree[n.id] !== false) walk(n.children, depth + 1)
+    }
+  }
+  walk(hierarchyTree.value, 0)
+  return out
+})
+
+function toggleTreeNode(node, ev) {
+  ev?.stopPropagation?.()
+  if (!node?.children?.length) return
+  expandedTree[node.id] = expandedTree[node.id] === false
+}
+
+function selectHierarchyNode(node) {
+  const id = node?.id
+  if (!id) return
+  viewportRef.value?.selectByPath?.(id)
 }
 </script>
 
@@ -254,6 +298,10 @@ function onStats(s) {
               <input v-model="params.showCreaturePhysics" type="checkbox" />
               <span>显示物理（布娃娃碰撞线框）</span>
             </label>
+            <label class="field menu-check">
+              <input v-model="params.showCreatureHitbox" type="checkbox" />
+              <span>显示 hitbox（每关节）</span>
+            </label>
 
             <template v-if="params.kind === 'biped'">
               <div class="dock-head">两足</div>
@@ -340,8 +388,37 @@ function onStats(s) {
           class="view"
           :params="params"
           @stats="onStats"
+          @hierarchy="onHierarchy"
+          @selection="onSelection"
         />
       </div>
+      <aside class="dock-area-right">
+        <div class="dock-right">
+          <div class="dock-inner">
+            <div class="dock-head">层级</div>
+            <button
+              v-for="n in flatHierarchy"
+              :key="n.id"
+              type="button"
+              class="tree-row"
+              :class="{ 'tree-row-active': selectedPath === n.id || selectedPath.endsWith('/' + n.name) }"
+              :style="{ paddingLeft: 8 + n.depth * 14 + 'px' }"
+              @click="selectHierarchyNode(n)"
+            >
+              <span
+                class="tree-twisty"
+                :class="{ 'tree-twisty-empty': !n.children?.length }"
+                @click="toggleTreeNode(n, $event)"
+              >
+                {{ n.children?.length ? (expandedTree[n.id] === false ? '▸' : '▾') : '·' }}
+              </span>
+              {{ n.kind === 'bone' ? '🦴' : n.kind?.includes('hitbox') || n.kind === 'physics' ? '📦' : '◼' }} {{ n.name }}
+            </button>
+            <div class="dock-head">当前选中</div>
+            <pre class="selected-text">{{ selectedText }}</pre>
+          </div>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
@@ -589,6 +666,61 @@ function onStats(s) {
   min-height: 0;
 }
 
+.dock-area-right {
+  width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid #2a3140;
+  background: #12161c;
+  min-height: 0;
+}
+
+.dock-right {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-row {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #c8d0dc;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.tree-row:hover {
+  background: rgba(80, 98, 126, 0.25);
+}
+
+.tree-row-active {
+  background: rgba(54, 106, 168, 0.38);
+  color: #edf3fb;
+}
+
+.tree-twisty {
+  display: inline-block;
+  width: 1rem;
+  margin-right: 2px;
+  color: #8ea0bb;
+}
+
+.tree-twisty-empty {
+  opacity: 0.45;
+}
+
+.selected-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: #d2dae7;
+}
+
 @media (max-width: 800px) {
   .workspace {
     flex-direction: column;
@@ -623,6 +755,13 @@ function onStats(s) {
 
   .client-area {
     min-height: 45vh;
+  }
+
+  .dock-area-right {
+    width: 100%;
+    max-height: 40vh;
+    border-left: none;
+    border-top: 1px solid #2a3140;
   }
 }
 </style>
