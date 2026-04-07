@@ -1,0 +1,59 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0f1218;
+  color: #e8eaef;
+}
+
+#app {
+  height: 100%;
+}
+
+input[type='range'] {
+  width: 100%;
+}
+
+input[type='number'] {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #2a3140;
+  background: #1a1f2a;
+  color: inherit;
+}
+
+button {
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #3d4a60;
+  background: #252b38;
+  color: #e8eaef;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+button:hover {
+  background: #323a4d;
+}
+
+button.primary {
+  background: #2d6a4f;
+  border-color: #40916c;
+}
+
+button.primary:hover {
+  background: #358f6a;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
