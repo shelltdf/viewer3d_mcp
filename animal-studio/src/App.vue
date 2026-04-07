@@ -7,10 +7,10 @@ import {
   defaultCreatureParams,
   applySubspeciesPreset,
 } from './creature/proceduralCreature.js'
-import { CREATURE_ANIMATIONS } from './creature/proceduralAnimations.js'
 
 const LS_OPEN = 'animal-studio.dock.paramsOpen'
 const LS_W = 'animal-studio.dock.paramsWidth'
+const LS_APPEAR_OPEN = 'animal-studio.dock.appearanceOpen'
 
 function readLsBool(key, d) {
   try {
@@ -49,11 +49,13 @@ const animationPreset = ref('none')
 const ragdollEnabled = ref(false)
 
 const dockOpen = ref(readLsBool(LS_OPEN, true))
+const appearanceDockOpen = ref(readLsBool(LS_APPEAR_OPEN, false))
 const dockWidth = ref(readLsNum(LS_W, 300, 220, 480))
 
 function persistDock() {
   try {
     localStorage.setItem(LS_OPEN, dockOpen.value ? '1' : '0')
+    localStorage.setItem(LS_APPEAR_OPEN, appearanceDockOpen.value ? '1' : '0')
     localStorage.setItem(LS_W, String(Math.round(dockWidth.value)))
   } catch {
     /* ignore */
@@ -99,6 +101,13 @@ onUnmounted(() => {
 
 function toggleDock() {
   dockOpen.value = !dockOpen.value
+  if (dockOpen.value) appearanceDockOpen.value = false
+  persistDock()
+}
+
+function toggleAppearanceDock() {
+  appearanceDockOpen.value = !appearanceDockOpen.value
+  if (appearanceDockOpen.value) dockOpen.value = false
   persistDock()
 }
 
@@ -230,7 +239,7 @@ function selectHierarchyNode(node) {
     </header>
 
     <div class="workspace">
-      <div class="dock-area dock-area-left" :class="{ 'dock-collapsed': !dockOpen }">
+      <div class="dock-area dock-area-left" :class="{ 'dock-collapsed': !dockOpen && !appearanceDockOpen }">
         <div class="dock-button-bar" role="toolbar" aria-label="停靠按钮条">
           <button
             type="button"
@@ -240,6 +249,15 @@ function selectHierarchyNode(node) {
             @click="toggleDock"
           >
             参数
+          </button>
+          <button
+            type="button"
+            class="dock-button"
+            :class="{ 'dock-button-on': appearanceDockOpen }"
+            :title="(appearanceDockOpen ? '折叠' : '展开') + '外观（无全局快捷键）'"
+            @click="toggleAppearanceDock"
+          >
+            外观
           </button>
         </div>
         <div v-show="dockOpen" class="dock-view" :style="{ width: dockWidth + 'px' }">
@@ -267,52 +285,6 @@ function selectHierarchyNode(node) {
             <label class="field">
               <span>种子</span>
               <input v-model.number="params.seed" type="number" min="0" step="1" />
-            </label>
-
-            <div class="dock-head">动作（程序化）</div>
-            <label class="field">
-              <span>预览动作</span>
-              <select v-model="animationPreset" class="select">
-                <option v-for="a in CREATURE_ANIMATIONS" :key="a.id" :value="a.id">{{ a.label }}</option>
-              </select>
-            </label>
-            <p class="stat-line hint">视口左上角也有同一菜单。已为自动蒙皮（SkinnedMesh）；导出 ZIP 内每个动作单独一个 animation_*.glb。</p>
-
-            <div class="dock-head">外观</div>
-            <label class="field">
-              <span>整体缩放 {{ params.scale.toFixed(2) }}</span>
-              <input v-model.number="params.scale" type="range" min="0.35" max="2.2" step="0.02" />
-            </label>
-            <label class="field">
-              <span>色相 {{ params.hue.toFixed(2) }}</span>
-              <input v-model.number="params.hue" type="range" min="0" max="1" step="0.01" />
-            </label>
-            <label class="field">
-              <span>饱和度 {{ params.saturation.toFixed(2) }}</span>
-              <input v-model.number="params.saturation" type="range" min="0" max="1" step="0.02" />
-            </label>
-            <label class="field">
-              <span>明度 {{ params.lightness.toFixed(2) }}</span>
-              <input v-model.number="params.lightness" type="range" min="0.15" max="0.85" step="0.02" />
-            </label>
-            <p class="stat-line hint" style="margin-top: 6px">
-              角色显示（与视口右上角同源）：蒙皮模型、骨骼辅助体、物理碰撞线框。
-            </p>
-            <label class="field menu-check">
-              <input v-model="params.showCreatureModel" type="checkbox" />
-              <span>显示模型（SkinnedMesh）</span>
-            </label>
-            <label class="field menu-check">
-              <input v-model="params.showSkeleton" type="checkbox" />
-              <span>显示骨骼（关节球与骨线）</span>
-            </label>
-            <label class="field menu-check">
-              <input v-model="params.showCreaturePhysics" type="checkbox" />
-              <span>显示物理（布娃娃碰撞线框）</span>
-            </label>
-            <label class="field menu-check">
-              <input v-model="params.showCreatureHitbox" type="checkbox" />
-              <span>显示 hitbox（每关节）</span>
             </label>
 
             <template v-if="params.kind === 'biped'">
@@ -431,8 +403,30 @@ function selectHierarchyNode(node) {
             </p>
           </div>
         </div>
+        <div v-show="appearanceDockOpen" class="dock-view" :style="{ width: dockWidth + 'px' }">
+          <div class="dock-inner">
+            <div class="dock-head">外观</div>
+            <label class="field">
+              <span>整体缩放 {{ params.scale.toFixed(2) }}</span>
+              <input v-model.number="params.scale" type="range" min="0.35" max="2.2" step="0.02" />
+            </label>
+            <label class="field">
+              <span>色相 {{ params.hue.toFixed(2) }}</span>
+              <input v-model.number="params.hue" type="range" min="0" max="1" step="0.01" />
+            </label>
+            <label class="field">
+              <span>饱和度 {{ params.saturation.toFixed(2) }}</span>
+              <input v-model.number="params.saturation" type="range" min="0" max="1" step="0.02" />
+            </label>
+            <label class="field">
+              <span>明度 {{ params.lightness.toFixed(2) }}</span>
+              <input v-model.number="params.lightness" type="range" min="0.15" max="0.85" step="0.02" />
+            </label>
+            <p class="stat-line hint">角色显示开关与动作下拉框请在 3D 视口右上角使用。</p>
+          </div>
+        </div>
         <div
-          v-show="dockOpen"
+          v-show="dockOpen || appearanceDockOpen"
           class="splitter"
           title="拖动调宽（无全局快捷键）"
           @mousedown="startDrag"

@@ -59,6 +59,8 @@ const selectedPath = ref('')
 const raycaster = new THREE.Raycaster()
 const pointerNdc = new THREE.Vector2()
 let modelHitbox = null
+let modelWireframe = null
+let groundMesh = null
 let rebuildSeq = 0
 
 function disposeModelHitbox() {
@@ -68,6 +70,38 @@ function disposeModelHitbox() {
   modelHitbox.geometry?.dispose?.()
   modelHitbox.material?.dispose?.()
   modelHitbox = null
+}
+
+function disposeModelWireframe() {
+  if (!modelWireframe) return
+  const s = sceneRef.value
+  if (s) s.remove(modelWireframe)
+  modelWireframe.geometry?.dispose?.()
+  modelWireframe.material?.dispose?.()
+  modelWireframe = null
+}
+
+function ensureModelWireframe() {
+  const scene = sceneRef.value
+  const root = creatureRootRef.value
+  if (!scene || !root) return
+  const body = root.getObjectByName('CreatureBody')
+  if (!body?.isSkinnedMesh) return
+  if (!modelWireframe) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x7fe8ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.58,
+      depthTest: true,
+      depthWrite: false,
+    })
+    modelWireframe = new THREE.SkinnedMesh(body.geometry, mat)
+    modelWireframe.name = 'CreatureWireframe'
+    modelWireframe.bind(body.skeleton)
+    modelWireframe.renderOrder = 900
+    scene.add(modelWireframe)
+  }
 }
 
 function ensureModelHitbox() {
@@ -193,10 +227,12 @@ function applyViewportDisplayLayers() {
   const p = props.params
   const body = root.getObjectByName('CreatureBody')
   if (body) body.visible = p.showCreatureModel !== false
+  if (modelWireframe) modelWireframe.visible = p.showCreatureWireframe === true
   const arm = root.getObjectByName('Armature')
   if (arm) setSkeletonVisualizationVisible(arm, p.showSkeleton !== false)
   if (ragdollCtx?.wireGroup) ragdollCtx.wireGroup.visible = p.showCreaturePhysics !== false
   if (modelHitbox) modelHitbox.visible = p.showCreatureHitbox !== false
+  if (groundMesh) groundMesh.visible = p.showGround !== false
 }
 
 function disposeCreature(root) {
@@ -239,6 +275,7 @@ async function rebuildCreature() {
   if (!scene) return
   disposeRagdollPhysics()
   disposeModelHitbox()
+  disposeModelWireframe()
   const old = creatureRootRef.value
   if (old) {
     scene.remove(old)
@@ -253,6 +290,7 @@ async function rebuildCreature() {
   emit('stats', stats)
   rebuildRagdollPhysics()
   ensureModelHitbox()
+  ensureModelWireframe()
   rebuildHierarchyAndSelection()
   lastGeometryFingerprint = creatureGeometryFingerprint(props.params)
   applyViewportDisplayLayers()
@@ -581,14 +619,37 @@ onMounted(() => {
   fill.position.set(-4, 3, 4)
   scene.add(fill)
 
+  const checkerCanvas = document.createElement('canvas')
+  checkerCanvas.width = 2
+  checkerCanvas.height = 2
+  const checkerCtx = checkerCanvas.getContext('2d')
+  if (checkerCtx) {
+    checkerCtx.fillStyle = '#ffffff'
+    checkerCtx.fillRect(0, 0, 2, 2)
+    checkerCtx.fillStyle = '#111111'
+    checkerCtx.fillRect(0, 0, 1, 1)
+    checkerCtx.fillRect(1, 1, 1, 1)
+  }
+  const checkerTex = new THREE.CanvasTexture(checkerCanvas)
+  checkerTex.wrapS = THREE.RepeatWrapping
+  checkerTex.wrapT = THREE.RepeatWrapping
+  checkerTex.magFilter = THREE.NearestFilter
+  checkerTex.minFilter = THREE.NearestFilter
+  checkerTex.generateMipmaps = false
+  const groundSize = 40
+  // 每个 repeat 对应 1 米，因此 repeat=groundSize 即 1m 棋盘格
+  checkerTex.repeat.set(groundSize, groundSize)
+  checkerTex.needsUpdate = true
+
   const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(8, 40),
-    new THREE.MeshStandardMaterial({ color: 0x3a4540, roughness: 1, metalness: 0 }),
+    new THREE.PlaneGeometry(groundSize, groundSize, 1, 1),
+    new THREE.MeshStandardMaterial({ map: checkerTex, roughness: 1, metalness: 0 }),
   )
   ground.rotation.x = -Math.PI / 2
   ground.position.y = -0.005
   ground.receiveShadow = true
   scene.add(ground)
+  groundMesh = ground
 
   rebuildCreature()
   fitCameraToCreature()
@@ -610,6 +671,8 @@ onUnmounted(() => {
   canvasRef.value?.removeEventListener?.('pointerdown', pickByPointer)
   disposeRagdollPhysics()
   disposeModelHitbox()
+  disposeModelWireframe()
+  groundMesh = null
   disposeCreature(creatureRootRef.value)
   creatureRootRef.value = null
   sceneRef.value?.clear()
@@ -660,6 +723,10 @@ watch(ragdollEnabled, (on) => {
         <span>模型显示</span>
       </label>
       <label class="display-check">
+        <input v-model="params.showCreatureWireframe" type="checkbox" />
+        <span>模型线框</span>
+      </label>
+      <label class="display-check">
         <input v-model="params.showSkeleton" type="checkbox" />
         <span>骨骼显示</span>
       </label>
@@ -677,6 +744,10 @@ watch(ragdollEnabled, (on) => {
       <label class="display-check" title="每关节 hitbox 线框">
         <input v-model="params.showCreatureHitbox" type="checkbox" />
         <span>Hitbox 显示</span>
+      </label>
+      <label class="display-check">
+        <input v-model="params.showGround" type="checkbox" />
+        <span>地面显示</span>
       </label>
     </div>
     <div class="hud">拖拽旋转 · 滚轮缩放 · 右平移</div>

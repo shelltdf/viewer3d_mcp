@@ -131,15 +131,15 @@ const SUBSPECIES_PRESETS = {
   quadruped: {
     /** 马：长颈、长腿；肢端腕/球节、跗更靠下（长掌骨/跖骨），关节 t 应显著 >0.5 */
     horse: {
-      bodyLength: 1.06,
-      bodyHeight: 0.4,
-      legLength: 0.7,
+      bodyLength: 1.18,
+      bodyHeight: 0.46,
+      legLength: 0.8,
       neckLen: 0.56,
-      headSize: 0.152,
+      headSize: 0.17,
       tailLen: 0.44,
       hue: 0.085,
-      saturation: 0.48,
-      lightness: 0.34,
+      saturation: 0.44,
+      lightness: 0.4,
       quadStanceX: 0.318,
       quadStanceZ: 0.268,
       quadKneeAlongLeg: 0.61,
@@ -418,10 +418,14 @@ export function defaultCreatureParams(kind) {
     showSkeleton: true,
     /** SkinnedMesh；与视口 / Dock 共用 */
     showCreatureModel: true,
+    /** 模型线框叠加显示 */
+    showCreatureWireframe: false,
     /** 每关节 hitbox（JointHitboxes） */
     showCreatureHitbox: false,
     /** 布娃娃碰撞调试线框；与视口 / Dock 共用 */
     showCreaturePhysics: false,
+    /** 地面显示开关（视口） */
+    showGround: true,
   }
   const extras = {
     biped: {
@@ -471,7 +475,14 @@ export function defaultCreatureParams(kind) {
 }
 
 /** 仅视口图层，不改变几何；`CreatureViewport` 用其区分「重建网格」与「只更新显示」 */
-export const CREATURE_DISPLAY_PARAM_KEYS = ['showSkeleton', 'showCreatureModel', 'showCreatureHitbox', 'showCreaturePhysics']
+export const CREATURE_DISPLAY_PARAM_KEYS = [
+  'showSkeleton',
+  'showCreatureModel',
+  'showCreatureWireframe',
+  'showCreatureHitbox',
+  'showCreaturePhysics',
+  'showGround',
+]
 
 /**
  * 去掉图层字段后的快照，用于判断是否需要 `buildCreature`。
@@ -914,19 +925,25 @@ function buildHorseZBrushLike(p, rng) {
     }
   }
 
-  geoms.push(ellipsoid(bodyC, bodyW * 0.52, bh * 0.68, bl * 0.66))
-  addEllipsoidBalls(bodyC, bodyW * 0.52, bh * 0.68, bl * 0.66, 9, 1.0)
-  geoms.push(ellipsoid(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.35, bh * 0.24, bl * 0.18))
-  addEllipsoidBalls(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.35, bh * 0.24, bl * 0.18, 4, 0.96)
-  geoms.push(ellipsoid(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.5, bh * 0.3, bl * 0.33))
-  addEllipsoidBalls(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.5, bh * 0.3, bl * 0.33, 6, 0.96)
-  geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y - bh * 0.22, bl * 0.01), bodyW * 0.56, bh * 0.34, bl * 0.5))
-  addEllipsoidBalls(new THREE.Vector3(0, bodyC.y - bh * 0.22, bl * 0.01), bodyW * 0.56, bh * 0.34, bl * 0.5, 6, 0.92)
-  // 胸廓/腹部补体块，减少“干瘪”
-  addEllipsoidBalls(new THREE.Vector3(0, bodyC.y - bh * 0.06, bl * 0.12), bodyW * 0.46, bh * 0.36, bl * 0.28, 5, 0.95)
-  addEllipsoidBalls(new THREE.Vector3(0, bodyC.y - bh * 0.17, -bl * 0.1), bodyW * 0.44, bh * 0.32, bl * 0.24, 5, 0.95)
+  const ribCageC = new THREE.Vector3(0, ll + bh * 0.62, bl * 0.08)
+  const abdomenC = new THREE.Vector3(0, ll + bh * 0.48, -bl * 0.02)
+  const pelvisMassC = new THREE.Vector3(0, ll + bh * 0.57, -bl * 0.27)
+  const withersMassC = new THREE.Vector3(0, withersY + bh * 0.03, bl * 0.2)
+  geoms.push(ellipsoid(ribCageC, bodyW * 0.44, bh * 0.5, bl * 0.34))
+  addEllipsoidBalls(ribCageC, bodyW * 0.44, bh * 0.5, bl * 0.34, 7, 0.98)
+  geoms.push(ellipsoid(abdomenC, bodyW * 0.4, bh * 0.38, bl * 0.28))
+  addEllipsoidBalls(abdomenC, bodyW * 0.4, bh * 0.38, bl * 0.28, 6, 0.98)
+  geoms.push(ellipsoid(pelvisMassC, bodyW * 0.42, bh * 0.42, bl * 0.28))
+  addEllipsoidBalls(pelvisMassC, bodyW * 0.42, bh * 0.42, bl * 0.28, 6, 0.98)
+  geoms.push(ellipsoid(withersMassC, bodyW * 0.28, bh * 0.22, bl * 0.2))
+  addEllipsoidBalls(withersMassC, bodyW * 0.28, bh * 0.22, bl * 0.2, 4, 0.96)
+  // 肩峰与后大腿体块
+  addEllipsoidBalls(new THREE.Vector3(-bodyW * 0.24, ll + bh * 0.54, bl * 0.2), bodyW * 0.16, bh * 0.24, bl * 0.16, 4, 0.96)
+  addEllipsoidBalls(new THREE.Vector3(bodyW * 0.24, ll + bh * 0.54, bl * 0.2), bodyW * 0.16, bh * 0.24, bl * 0.16, 4, 0.96)
+  addEllipsoidBalls(new THREE.Vector3(-bodyW * 0.23, ll + bh * 0.5, -bl * 0.24), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
+  addEllipsoidBalls(new THREE.Vector3(bodyW * 0.23, ll + bh * 0.5, -bl * 0.24), bodyW * 0.18, bh * 0.24, bl * 0.16, 4, 0.96)
 
-  const lr = bh * 0.2
+  const lr = bh * 0.19
   blobChainAdaptive(scapL, fl.shoulder, lr * 0.88, lr * 0.72, 0.9)
   blobChainAdaptive(scapR, fr.shoulder, lr * 0.88, lr * 0.72, 0.9)
   for (const L of [fl, fr]) {
@@ -941,8 +958,8 @@ function buildHorseZBrushLike(p, rng) {
     blobChainAdaptive(L.hock, L.fetlock, lr * 0.38, lr * 0.24, 1.15)
     blobChainAdaptive(L.fetlock, L.hoof, lr * 0.22, lr * 0.18, 1.05)
   }
-  blobChainAdaptive(neckBase, neckMid, lr * 1.06, lr * 0.72, 1.15)
-  blobChainAdaptive(neckMid, headBase, lr * 0.62, lr * 0.36, 1.15)
+  blobChainAdaptive(neckBase, neckMid, lr * 1.0, lr * 0.68, 1.05)
+  blobChainAdaptive(neckMid, headBase, lr * 0.6, lr * 0.34, 1.05)
   geoms.push(ellipsoid(headC, hs * 0.42, hs * 0.78, hs * 1.6))
   addEllipsoidBalls(headC, hs * 0.42, hs * 0.78, hs * 1.6, 5, 0.92)
   geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, hs * 0.17, hs * 0.16)), hs * 0.3, hs * 0.24, hs * 0.52))
@@ -1083,7 +1100,7 @@ function buildMetaballSurface(
         : { blur: 0.04, inflate: 1.006 }
   // 球团体积分布差异越大，等值面分辨率越高，避免大小体块交界处“糊掉”
   const volumeAdaptiveScale = THREE.MathUtils.clamp(1 + cv * 0.55 + (rangeRatio - 1) * 0.08, 1, 1.65)
-  const res = Math.max(28, Math.min(84, Math.round(42 * densityScale * volumeAdaptiveScale)))
+  const res = Math.max(36, Math.min(92, Math.round(52 * densityScale * volumeAdaptiveScale)))
   const mc = new MarchingCubes(res, new THREE.MeshBasicMaterial(), false, false, 240000)
   mc.isolation = 0
   mc.reset()
@@ -1175,6 +1192,7 @@ function buildMetaballSurface(
     meshVolume = Math.max(1e-8, computeGeometryVolume(g))
     errorPct = Math.abs(meshVolume - targetVolume) / targetVolume * 100
   }
+  ensureOutwardNormals(g)
   g.computeVertexNormals()
   return {
     geometry: g,
@@ -1210,6 +1228,52 @@ function computeGeometryVolume(g) {
     v += Math.abs(det)
   }
   return v / 6
+}
+
+/**
+ * 检测并修正网格法线方向（若整体朝里则翻面并重算法线）
+ * @param {THREE.BufferGeometry} g
+ */
+function ensureOutwardNormals(g) {
+  const pos = g.getAttribute('position')
+  if (!pos || pos.count < 3) return
+  g.computeBoundingBox()
+  const bb = g.boundingBox
+  if (!bb || bb.isEmpty()) return
+  const c = new THREE.Vector3()
+  bb.getCenter(c)
+
+  let acc = 0
+  const a = new THREE.Vector3()
+  const b = new THREE.Vector3()
+  const d = new THREE.Vector3()
+  const e1 = new THREE.Vector3()
+  const e2 = new THREE.Vector3()
+  const n = new THREE.Vector3()
+  for (let i = 0; i + 2 < pos.count; i += 3) {
+    a.set(pos.getX(i), pos.getY(i), pos.getZ(i))
+    b.set(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1))
+    d.set(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2))
+    e1.subVectors(b, a)
+    e2.subVectors(d, a)
+    n.crossVectors(e1, e2)
+    const cx = (a.x + b.x + d.x) / 3 - c.x
+    const cy = (a.y + b.y + d.y) / 3 - c.y
+    const cz = (a.z + b.z + d.z) / 3 - c.z
+    acc += n.x * cx + n.y * cy + n.z * cz
+  }
+  if (acc >= 0) return
+
+  // 翻转三角面 winding
+  for (let i = 0; i + 2 < pos.count; i += 3) {
+    const bx = pos.getX(i + 1)
+    const by = pos.getY(i + 1)
+    const bz = pos.getZ(i + 1)
+    pos.setXYZ(i + 1, pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2))
+    pos.setXYZ(i + 2, bx, by, bz)
+  }
+  pos.needsUpdate = true
+  g.computeVertexNormals()
 }
 
 function buildQuadruped(p, rng) {
