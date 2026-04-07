@@ -12,6 +12,7 @@
 |--------|----------|
 | 上述 1～3 均运行于浏览器 | `02-physical/gltf-mcp/`（另含 Node MCP 与 HTTP 桥接进程） |
 | 同构 Vue + Three 独立应用（程序化植物编辑） | `02-physical/plant-studio/`（仅静态 SPA，无 MCP） |
+| Vue SDI + Three 独立应用（动物粗模生成） | `02-physical/animal-studio/` |
 
 ## 依赖关系
 

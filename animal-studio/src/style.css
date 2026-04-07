@@ -1,0 +1,64 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0f1218;
+  color: #e8eaef;
+}
+
+#app {
+  height: 100%;
+}
+
+input[type='range'] {
+  width: 100%;
+}
+
+input[type='number'] {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #2a3140;
+  background: #1a1f2a;
+  color: inherit;
+}
+
+button {
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #3d4a60;
+  background: #252b38;
+  color: #e8eaef;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+button:hover {
+  background: #323a4d;
+}
+
+button.primary {
+  background: #2d4a6e;
+  border-color: #4a7ab0;
+}
+
+button.primary:hover {
+  background: #355a8a;
+}
+
+select.select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #2a3140;
+  background: #1a1f2a;
+  color: inherit;
+  font-size: 0.875rem;
+}

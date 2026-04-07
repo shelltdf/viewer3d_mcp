@@ -5,6 +5,7 @@
 - `ai-software-engineering/`：四阶段工程文档（**不含**业务源码）。
 - `gltf-mcp/`：Vue + MCP + 桥接实现子项目（**文档外**）。
 - `plant-studio/`：Vue + Vite + three.js 程序化植物编辑器（**文档外**）；`npm run dev` / `npm run build` 用法与常规 Vite 项目相同；亦可在该目录执行 **`python run_web.py`** 启动开发服务器并可选自动打开浏览器。
+- `animal-studio/`：Vue SDI 动物生成器（**文档外**）；默认开发端口 **5174**（见 `vite.config.js`）；**`python run_web.py`** 默认同端口探测。导出为 **ZIP**（`jszip` + `GLTFExporter`），见 `src/creature/bakeExport.js`。
 
 ## 依赖
 
