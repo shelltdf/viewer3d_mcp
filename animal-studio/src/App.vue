@@ -327,6 +327,16 @@ function selectHierarchyNode(node) {
 
             <template v-if="params.kind === 'quadruped'">
               <div class="dock-head">四足</div>
+              <label v-if="params.subspecies === 'horse'" class="field">
+                <span>马模型来源</span>
+                <select v-model="params.horseWorkflow" class="select">
+                  <option value="procedural">程序图元（当前）</option>
+                  <option value="zbrush">ZBrush 风格球团（算法）</option>
+                </select>
+              </label>
+              <p v-if="params.subspecies === 'horse' && params.horseWorkflow === 'zbrush'" class="stat-line hint">
+                根据骨骼节点关系生成重叠球团体块（类似 ZBrush blocking），再自动蒙皮。
+              </p>
               <label class="field"><span>体长</span><input v-model.number="params.bodyLength" type="range" min="0.4" max="1.2" step="0.02" /></label>
               <label class="field"><span>体高</span><input v-model.number="params.bodyHeight" type="range" min="0.2" max="0.55" step="0.02" /></label>
               <label class="field"><span>腿长</span><input v-model.number="params.legLength" type="range" min="0.25" max="0.75" step="0.02" /></label>

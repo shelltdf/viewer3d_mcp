@@ -191,10 +191,20 @@ function applyQuadrupedJoints(armature, id, tSec) {
       // 马步：四拍节律，前后肢摆幅稍大，颈与头做更平稳点头
       const w = ph * 0.86
       applyQuadrupedLegs(armature, id, tSec, w + Math.PI * 0.16, 0.44, 0.36, 0.5, 0.44)
+      for (const leg of ['FL', 'FR', 'BL', 'BR']) {
+        const phase = w + (leg === 'FL' || leg === 'BR' ? 0 : Math.PI)
+        const f = Math.max(0, -Math.sin(phase))
+        boneRot(armature, `Cannon_${leg}`, f * 0.28, 0, 0)
+        boneRot(armature, `Paw_${leg}`, f * 0.14, 0, 0)
+      }
       boneRot(armature, 'Lumbar', Math.sin(w * 0.52) * 0.06, 0, Math.sin(w * 0.47) * 0.03)
       boneRot(armature, 'Thoracic', Math.sin(w * 0.5 + 0.25) * 0.05, 0, 0)
+      boneRot(armature, 'Scapula_FL', Math.sin(w + Math.PI * 0.12) * 0.1, 0, 0)
+      boneRot(armature, 'Scapula_FR', Math.sin(w + Math.PI + Math.PI * 0.12) * 0.1, 0, 0)
       boneRot(armature, 'Cervical', -Math.abs(Math.sin(w * 1.8)) * 0.08 + 0.02, 0, 0)
       boneRot(armature, 'Skull', Math.sin(w * 0.9 + 0.8) * 0.05, 0, 0)
+      boneRot(armature, 'Muzzle', Math.sin(w * 0.9 + 1.2) * 0.04, 0, 0)
+      boneRot(armature, 'Pelvis', Math.sin(w * 0.52 + Math.PI) * 0.035, 0, 0)
       boneRot(armature, 'Tail_base', 0, 0, Math.sin(w * 0.95) * 0.1)
       boneRot(armature, 'Tail_tip', 0, 0, Math.sin(w * 1.18 + 0.45) * 0.15)
       break

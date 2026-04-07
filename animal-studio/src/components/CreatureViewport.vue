@@ -59,6 +59,7 @@ const selectedPath = ref('')
 const raycaster = new THREE.Raycaster()
 const pointerNdc = new THREE.Vector2()
 let modelHitbox = null
+let rebuildSeq = 0
 
 function disposeModelHitbox() {
   if (!modelHitbox) return
@@ -232,7 +233,8 @@ function rebuildRagdollPhysics() {
   applyViewportDisplayLayers()
 }
 
-function rebuildCreature() {
+async function rebuildCreature() {
+  const seq = ++rebuildSeq
   const scene = sceneRef.value
   if (!scene) return
   disposeRagdollPhysics()
@@ -243,7 +245,9 @@ function rebuildCreature() {
     disposeCreature(old)
     creatureRootRef.value = null
   }
-  const { group, stats } = buildCreature(props.params)
+  const built = buildCreature(props.params)
+  if (seq !== rebuildSeq) return
+  const { group, stats } = built
   scene.add(group)
   creatureRootRef.value = group
   emit('stats', stats)

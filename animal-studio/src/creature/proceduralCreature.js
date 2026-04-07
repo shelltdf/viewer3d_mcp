@@ -130,19 +130,19 @@ const SUBSPECIES_PRESETS = {
   quadruped: {
     /** 马：长颈、长腿；肢端腕/球节、跗更靠下（长掌骨/跖骨），关节 t 应显著 >0.5 */
     horse: {
-      bodyLength: 0.88,
-      bodyHeight: 0.36,
-      legLength: 0.62,
-      neckLen: 0.46,
-      headSize: 0.14,
-      tailLen: 0.38,
-      quadStanceX: 0.34,
-      quadStanceZ: 0.24,
-      quadKneeAlongLeg: 0.585,
-      quadKneeAlongLegFront: 0.575,
-      quadKneeAlongLegHind: 0.64,
-      quadNeckForward: 0.38,
-      quadTailZ: 0.3,
+      bodyLength: 1.06,
+      bodyHeight: 0.35,
+      legLength: 0.7,
+      neckLen: 0.56,
+      headSize: 0.152,
+      tailLen: 0.44,
+      quadStanceX: 0.318,
+      quadStanceZ: 0.268,
+      quadKneeAlongLeg: 0.61,
+      quadKneeAlongLegFront: 0.585,
+      quadKneeAlongLegHind: 0.695,
+      quadNeckForward: 0.41,
+      quadTailZ: 0.335,
     },
     cow: {
       bodyLength: 0.92,
@@ -439,6 +439,7 @@ export function defaultCreatureParams(kind) {
       neckLen: 0.35,
       headSize: 0.18,
       tailLen: 0.25,
+      horseWorkflow: 'procedural',
       quadStanceX: 0.35,
       quadStanceZ: 0.2,
       quadKneeAlongLeg: 0.52,
@@ -633,7 +634,328 @@ function buildBiped(p, rng) {
   return { geoms: geoms.filter(Boolean), bones }
 }
 
+function buildHorseQuadruped(p, rng) {
+  const geoms = []
+  /** @type {BoneJoint[]} */
+  const bones = []
+  const s = p.scale
+  const bl = p.bodyLength * s
+  const bh = p.bodyHeight * s
+  const ll = p.legLength * s
+  const nk = p.neckLen * s
+  const hs = p.headSize * s
+  const tl = p.tailLen * s
+
+  // torso / topline
+  const withersY = ll + bh * 1.08
+  const croupY = ll + bh * 0.94
+  const bodyC = new THREE.Vector3(0, ll + bh * 0.55, -bl * 0.02)
+  const bodyW = bl * 0.42
+  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * 0.6, bl * 0.62))
+  geoms.push(ellipsoid(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.33, bh * 0.2, bl * 0.14))
+  geoms.push(ellipsoid(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.48, bh * 0.28, bl * 0.31))
+  geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y - bh * 0.2, bl * 0.02), bodyW * 0.52, bh * 0.28, bl * 0.46))
+
+  // leg anchors
+  const shoulderX = bl * 0.155
+  const hipX = bl * 0.17
+  const frontZ = bl * 0.24
+  const hindZ = -bl * 0.24
+
+  const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.18, frontZ)
+  const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.18, frontZ)
+  const scapL = shL.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
+  const scapR = shR.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
+  const hipL = new THREE.Vector3(-hipX, croupY - bh * 0.16, hindZ)
+  const hipR = new THREE.Vector3(hipX, croupY - bh * 0.16, hindZ)
+
+  function frontLegPoints(shoulder, sideSign) {
+    const hoof = new THREE.Vector3(
+      shoulder.x + sideSign * 0.01 + rng() * 0.015 - 0.0075,
+      0,
+      shoulder.z + 0.045 + rng() * 0.012 - 0.006,
+    )
+    const elbow = vecLerp(shoulder, hoof, 0.34)
+    const carpus = vecLerp(shoulder, hoof, 0.62)
+    const fetlock = vecLerp(shoulder, hoof, 0.9)
+    return { shoulder, elbow, carpus, fetlock, hoof }
+  }
+
+  function hindLegPoints(hip, sideSign) {
+    const hoof = new THREE.Vector3(
+      hip.x + sideSign * 0.012 + rng() * 0.015 - 0.0075,
+      0,
+      hip.z - 0.03 + rng() * 0.012 - 0.006,
+    )
+    const stifle = vecLerp(hip, hoof, 0.4)
+    stifle.z += bl * 0.075
+    const hock = vecLerp(hip, hoof, 0.69)
+    hock.z += bl * 0.058
+    const fetlock = vecLerp(hock, hoof, 0.84)
+    return { hip, stifle, hock, fetlock, hoof }
+  }
+
+  const fl = frontLegPoints(shL, -1)
+  const fr = frontLegPoints(shR, 1)
+  const blg = hindLegPoints(hipL, -1)
+  const brg = hindLegPoints(hipR, 1)
+
+  const lr = bh * 0.17
+  const addFront = (L) => {
+    geoms.push(limbCylinder(L.shoulder, L.elbow, lr * 1.06, lr * 0.7))
+    geoms.push(limbCylinder(L.elbow, L.carpus, lr * 0.7, lr * 0.45))
+    geoms.push(limbCylinder(L.carpus, L.fetlock, lr * 0.42, lr * 0.28))
+    geoms.push(limbCylinder(L.fetlock, L.hoof, lr * 0.27, lr * 0.2))
+  }
+  const addHind = (L) => {
+    geoms.push(limbCylinder(L.hip, L.stifle, lr * 1.04, lr * 0.7))
+    geoms.push(limbCylinder(L.stifle, L.hock, lr * 0.68, lr * 0.42))
+    geoms.push(limbCylinder(L.hock, L.fetlock, lr * 0.42, lr * 0.27))
+    geoms.push(limbCylinder(L.fetlock, L.hoof, lr * 0.26, lr * 0.2))
+  }
+  addFront(fl)
+  addFront(fr)
+  addHind(blg)
+  addHind(brg)
+  geoms.push(limbCylinder(scapL, fl.shoulder, lr * 0.92, lr * 0.72))
+  geoms.push(limbCylinder(scapR, fr.shoulder, lr * 0.92, lr * 0.72))
+
+  // hoofs
+  const hoofH = Math.max(0.014, lr * 0.28)
+  const hoofLen = lr * 0.5
+  const hoofW = lr * 0.33
+  for (const h of [fl.hoof, fr.hoof, blg.hoof, brg.hoof]) {
+    const cc = h.clone()
+    cc.y = hoofH * 0.5
+    geoms.push(box(cc, hoofW, hoofH, hoofLen))
+    geoms.push(cone(cc.clone().add(new THREE.Vector3(0, hoofH * 0.12, hoofLen * 0.12)), hoofW * 0.34, hoofLen * 0.4, new THREE.Vector3(0, -0.1, 1)))
+  }
+
+  // neck / head
+  const neckBase = new THREE.Vector3(0, withersY + bh * 0.04, bl * 0.36)
+  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.34, nk * 0.45))
+  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.16, nk * 0.46))
+  const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.02, hs * 0.68))
+  geoms.push(limbCylinder(neckBase, neckMid, lr * 0.95, lr * 0.62))
+  geoms.push(limbCylinder(neckMid, headBase, lr * 0.62, lr * 0.35))
+  geoms.push(ellipsoid(headC, hs * 0.4, hs * 0.76, hs * 1.58))
+  geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, hs * 0.17, hs * 0.16)), hs * 0.3, hs * 0.24, hs * 0.52))
+  const muzzle = headC.clone().add(new THREE.Vector3(0, -hs * 0.1, hs * 0.74))
+  geoms.push(cone(muzzle, hs * 0.23, hs * 0.72, new THREE.Vector3(0, -0.06, 1)))
+  geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, -hs * 0.22, hs * 0.25)), hs * 0.26, hs * 0.16, hs * 0.44))
+
+  // tail
+  const tailStart = new THREE.Vector3(0, croupY + bh * 0.12, -bl * 0.35)
+  const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.08 - 0.04, tl * 0.14, -tl))
+  geoms.push(limbCylinder(tailStart, tailEnd, lr * 0.42, lr * 0.2))
+
+  // bones hierarchy
+  const pelvisP = new THREE.Vector3(0, croupY - bh * 0.12, hindZ)
+  const lumbarP = new THREE.Vector3(0, ll + bh * 0.62, -bl * 0.06)
+  const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1)
+  const cervicalP = neckMid.clone().lerp(neckBase, 0.45)
+
+  bones.push({ name: 'Root', pos: new THREE.Vector3(0, 0, 0), parent: null })
+  bones.push({ name: 'Pelvis', pos: pelvisP, parent: 'Root' })
+  bones.push({ name: 'Lumbar', pos: lumbarP, parent: 'Pelvis' })
+  bones.push({ name: 'Thoracic', pos: thoracicP, parent: 'Lumbar' })
+  bones.push({ name: 'Cervical', pos: cervicalP, parent: 'Thoracic' })
+  bones.push({ name: 'Skull', pos: headC.clone(), parent: 'Cervical' })
+  bones.push({ name: 'Forehead', pos: headC.clone().add(new THREE.Vector3(0, hs * 0.16, hs * 0.08)), parent: 'Skull' })
+  bones.push({ name: 'Muzzle', pos: muzzle.clone(), parent: 'Skull' })
+  bones.push({ name: 'Tail_base', pos: tailStart.clone(), parent: 'Pelvis' })
+  bones.push({ name: 'Tail_tip', pos: tailEnd.clone(), parent: 'Tail_base' })
+
+  bones.push({ name: 'Scapula_FL', pos: scapL.clone(), parent: 'Thoracic' })
+  bones.push({ name: 'Scapula_FR', pos: scapR.clone(), parent: 'Thoracic' })
+  bones.push({ name: 'Humerus_FL', pos: fl.shoulder.clone(), parent: 'Scapula_FL' })
+  bones.push({ name: 'RadiusUlna_FL', pos: fl.carpus.clone(), parent: 'Humerus_FL' })
+  bones.push({ name: 'Cannon_FL', pos: fl.fetlock.clone(), parent: 'RadiusUlna_FL' })
+  bones.push({ name: 'Paw_FL', pos: fl.hoof.clone(), parent: 'Cannon_FL' })
+
+  bones.push({ name: 'Humerus_FR', pos: fr.shoulder.clone(), parent: 'Scapula_FR' })
+  bones.push({ name: 'RadiusUlna_FR', pos: fr.carpus.clone(), parent: 'Humerus_FR' })
+  bones.push({ name: 'Cannon_FR', pos: fr.fetlock.clone(), parent: 'RadiusUlna_FR' })
+  bones.push({ name: 'Paw_FR', pos: fr.hoof.clone(), parent: 'Cannon_FR' })
+
+  bones.push({ name: 'Femur_BL', pos: blg.hip.clone(), parent: 'Pelvis' })
+  bones.push({ name: 'Tibia_BL', pos: blg.hock.clone(), parent: 'Femur_BL' })
+  bones.push({ name: 'Cannon_BL', pos: blg.fetlock.clone(), parent: 'Tibia_BL' })
+  bones.push({ name: 'Paw_BL', pos: blg.hoof.clone(), parent: 'Cannon_BL' })
+
+  bones.push({ name: 'Femur_BR', pos: brg.hip.clone(), parent: 'Pelvis' })
+  bones.push({ name: 'Tibia_BR', pos: brg.hock.clone(), parent: 'Femur_BR' })
+  bones.push({ name: 'Cannon_BR', pos: brg.fetlock.clone(), parent: 'Tibia_BR' })
+  bones.push({ name: 'Paw_BR', pos: brg.hoof.clone(), parent: 'Cannon_BR' })
+
+  return { geoms: geoms.filter(Boolean), bones }
+}
+
+/**
+ * ZBrush 风格球团起型：根据马骨架关键节点，用重叠球/椭球沿骨段“堆体块”。
+ * 目标是先得到接近雕塑 blocking 的体量关系，再走自动蒙皮。
+ */
+function buildHorseZBrushLike(p, rng) {
+  const geoms = []
+  /** @type {BoneJoint[]} */
+  const bones = []
+  const s = p.scale
+  const bl = p.bodyLength * s
+  const bh = p.bodyHeight * s
+  const ll = p.legLength * s
+  const nk = p.neckLen * s
+  const hs = p.headSize * s
+  const tl = p.tailLen * s
+
+  const withersY = ll + bh * 1.08
+  const croupY = ll + bh * 0.94
+  const bodyC = new THREE.Vector3(0, ll + bh * 0.55, -bl * 0.02)
+  const bodyW = bl * 0.42
+
+  const shoulderX = bl * 0.155
+  const hipX = bl * 0.17
+  const frontZ = bl * 0.24
+  const hindZ = -bl * 0.24
+  const shL = new THREE.Vector3(-shoulderX, withersY - bh * 0.18, frontZ)
+  const shR = new THREE.Vector3(shoulderX, withersY - bh * 0.18, frontZ)
+  const scapL = shL.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
+  const scapR = shR.clone().add(new THREE.Vector3(0, bh * 0.12, bl * 0.02))
+  const hipL = new THREE.Vector3(-hipX, croupY - bh * 0.16, hindZ)
+  const hipR = new THREE.Vector3(hipX, croupY - bh * 0.16, hindZ)
+
+  function frontLegPoints(shoulder, sideSign) {
+    const hoof = new THREE.Vector3(
+      shoulder.x + sideSign * 0.01 + rng() * 0.015 - 0.0075,
+      0,
+      shoulder.z + 0.045 + rng() * 0.012 - 0.006,
+    )
+    const elbow = vecLerp(shoulder, hoof, 0.34)
+    const carpus = vecLerp(shoulder, hoof, 0.62)
+    const fetlock = vecLerp(shoulder, hoof, 0.9)
+    return { shoulder, elbow, carpus, fetlock, hoof }
+  }
+  function hindLegPoints(hip, sideSign) {
+    const hoof = new THREE.Vector3(
+      hip.x + sideSign * 0.012 + rng() * 0.015 - 0.0075,
+      0,
+      hip.z - 0.03 + rng() * 0.012 - 0.006,
+    )
+    const stifle = vecLerp(hip, hoof, 0.4)
+    stifle.z += bl * 0.075
+    const hock = vecLerp(hip, hoof, 0.69)
+    hock.z += bl * 0.058
+    const fetlock = vecLerp(hock, hoof, 0.84)
+    return { hip, stifle, hock, fetlock, hoof }
+  }
+
+  const fl = frontLegPoints(shL, -1)
+  const fr = frontLegPoints(shR, 1)
+  const blg = hindLegPoints(hipL, -1)
+  const brg = hindLegPoints(hipR, 1)
+
+  const neckBase = new THREE.Vector3(0, withersY + bh * 0.04, bl * 0.36)
+  const neckMid = neckBase.clone().add(new THREE.Vector3(0, nk * 0.34, nk * 0.45))
+  const headBase = neckMid.clone().add(new THREE.Vector3(0, nk * 0.16, nk * 0.46))
+  const headC = headBase.clone().add(new THREE.Vector3(0, hs * 0.02, hs * 0.68))
+  const muzzle = headC.clone().add(new THREE.Vector3(0, -hs * 0.1, hs * 0.74))
+  const tailStart = new THREE.Vector3(0, croupY + bh * 0.12, -bl * 0.35)
+  const tailEnd = tailStart.clone().add(new THREE.Vector3(rng() * 0.08 - 0.04, tl * 0.14, -tl))
+
+  function blobChainAdaptive(a, b, r0, r1, density = 1) {
+    const len = a.distanceTo(b)
+    const rAvg = Math.max(1e-4, (r0 + r1) * 0.5)
+    // 长段更密，短段更疏；形成类似 dynamesh 球团叠加的连续体
+    const steps = Math.max(2, Math.min(16, Math.round((len / (rAvg * 0.62)) * density)))
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+      const c = vecLerp(a, b, t)
+      const rr = (r0 * (1 - t) + r1 * t) * (1 + Math.sin(t * Math.PI) * 0.12)
+      geoms.push(sphere(c, rr, 14))
+    }
+  }
+
+  // torso blobs
+  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * 0.62, bl * 0.64))
+  geoms.push(ellipsoid(new THREE.Vector3(0, withersY, bl * 0.2), bodyW * 0.35, bh * 0.24, bl * 0.18))
+  geoms.push(ellipsoid(new THREE.Vector3(0, croupY, -bl * 0.24), bodyW * 0.5, bh * 0.3, bl * 0.33))
+  geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y - bh * 0.22, bl * 0.01), bodyW * 0.56, bh * 0.34, bl * 0.5))
+
+  const lr = bh * 0.17
+  blobChainAdaptive(scapL, fl.shoulder, lr * 0.88, lr * 0.72, 0.9)
+  blobChainAdaptive(scapR, fr.shoulder, lr * 0.88, lr * 0.72, 0.9)
+  for (const L of [fl, fr]) {
+    blobChainAdaptive(L.shoulder, L.elbow, lr * 0.96, lr * 0.66, 1.05)
+    blobChainAdaptive(L.elbow, L.carpus, lr * 0.64, lr * 0.42, 1.1)
+    blobChainAdaptive(L.carpus, L.fetlock, lr * 0.4, lr * 0.26, 1.15)
+    blobChainAdaptive(L.fetlock, L.hoof, lr * 0.24, lr * 0.19, 1.05)
+  }
+  for (const L of [blg, brg]) {
+    blobChainAdaptive(L.hip, L.stifle, lr * 0.92, lr * 0.62, 1.05)
+    blobChainAdaptive(L.stifle, L.hock, lr * 0.62, lr * 0.4, 1.1)
+    blobChainAdaptive(L.hock, L.fetlock, lr * 0.38, lr * 0.24, 1.15)
+    blobChainAdaptive(L.fetlock, L.hoof, lr * 0.22, lr * 0.18, 1.05)
+  }
+
+  blobChainAdaptive(neckBase, neckMid, lr * 0.92, lr * 0.62, 1.1)
+  blobChainAdaptive(neckMid, headBase, lr * 0.62, lr * 0.36, 1.15)
+  geoms.push(ellipsoid(headC, hs * 0.42, hs * 0.78, hs * 1.6))
+  geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, hs * 0.17, hs * 0.16)), hs * 0.3, hs * 0.24, hs * 0.52))
+  geoms.push(cone(muzzle, hs * 0.23, hs * 0.72, new THREE.Vector3(0, -0.06, 1)))
+  geoms.push(ellipsoid(headC.clone().add(new THREE.Vector3(0, -hs * 0.22, hs * 0.25)), hs * 0.26, hs * 0.16, hs * 0.44))
+  // 头部二次球团细分：眼眶/颧/下颌角
+  const eyeLX = -hs * 0.19
+  const eyeRX = hs * 0.19
+  const eyeY = hs * 0.1
+  const eyeZ = hs * 0.35
+  geoms.push(sphere(headC.clone().add(new THREE.Vector3(eyeLX, eyeY, eyeZ)), hs * 0.12, 12))
+  geoms.push(sphere(headC.clone().add(new THREE.Vector3(eyeRX, eyeY, eyeZ)), hs * 0.12, 12))
+  geoms.push(sphere(headC.clone().add(new THREE.Vector3(-hs * 0.24, -hs * 0.08, hs * 0.18)), hs * 0.12, 12))
+  geoms.push(sphere(headC.clone().add(new THREE.Vector3(hs * 0.24, -hs * 0.08, hs * 0.18)), hs * 0.12, 12))
+  geoms.push(sphere(headC.clone().add(new THREE.Vector3(0, -hs * 0.18, -hs * 0.08)), hs * 0.12, 12))
+  blobChainAdaptive(tailStart, tailEnd, lr * 0.4, lr * 0.18, 1.1)
+
+  // bone hierarchy (same as horse dedicated topology)
+  const pelvisP = new THREE.Vector3(0, croupY - bh * 0.12, hindZ)
+  const lumbarP = new THREE.Vector3(0, ll + bh * 0.62, -bl * 0.06)
+  const thoracicP = new THREE.Vector3(0, ll + bh * 0.7, bl * 0.1)
+  const cervicalP = neckMid.clone().lerp(neckBase, 0.45)
+  bones.push({ name: 'Root', pos: new THREE.Vector3(0, 0, 0), parent: null })
+  bones.push({ name: 'Pelvis', pos: pelvisP, parent: 'Root' })
+  bones.push({ name: 'Lumbar', pos: lumbarP, parent: 'Pelvis' })
+  bones.push({ name: 'Thoracic', pos: thoracicP, parent: 'Lumbar' })
+  bones.push({ name: 'Cervical', pos: cervicalP, parent: 'Thoracic' })
+  bones.push({ name: 'Skull', pos: headC.clone(), parent: 'Cervical' })
+  bones.push({ name: 'Forehead', pos: headC.clone().add(new THREE.Vector3(0, hs * 0.16, hs * 0.08)), parent: 'Skull' })
+  bones.push({ name: 'Muzzle', pos: muzzle.clone(), parent: 'Skull' })
+  bones.push({ name: 'Tail_base', pos: tailStart.clone(), parent: 'Pelvis' })
+  bones.push({ name: 'Tail_tip', pos: tailEnd.clone(), parent: 'Tail_base' })
+  bones.push({ name: 'Scapula_FL', pos: scapL.clone(), parent: 'Thoracic' })
+  bones.push({ name: 'Scapula_FR', pos: scapR.clone(), parent: 'Thoracic' })
+  bones.push({ name: 'Humerus_FL', pos: fl.shoulder.clone(), parent: 'Scapula_FL' })
+  bones.push({ name: 'RadiusUlna_FL', pos: fl.carpus.clone(), parent: 'Humerus_FL' })
+  bones.push({ name: 'Cannon_FL', pos: fl.fetlock.clone(), parent: 'RadiusUlna_FL' })
+  bones.push({ name: 'Paw_FL', pos: fl.hoof.clone(), parent: 'Cannon_FL' })
+  bones.push({ name: 'Humerus_FR', pos: fr.shoulder.clone(), parent: 'Scapula_FR' })
+  bones.push({ name: 'RadiusUlna_FR', pos: fr.carpus.clone(), parent: 'Humerus_FR' })
+  bones.push({ name: 'Cannon_FR', pos: fr.fetlock.clone(), parent: 'RadiusUlna_FR' })
+  bones.push({ name: 'Paw_FR', pos: fr.hoof.clone(), parent: 'Cannon_FR' })
+  bones.push({ name: 'Femur_BL', pos: blg.hip.clone(), parent: 'Pelvis' })
+  bones.push({ name: 'Tibia_BL', pos: blg.hock.clone(), parent: 'Femur_BL' })
+  bones.push({ name: 'Cannon_BL', pos: blg.fetlock.clone(), parent: 'Tibia_BL' })
+  bones.push({ name: 'Paw_BL', pos: blg.hoof.clone(), parent: 'Cannon_BL' })
+  bones.push({ name: 'Femur_BR', pos: brg.hip.clone(), parent: 'Pelvis' })
+  bones.push({ name: 'Tibia_BR', pos: brg.hock.clone(), parent: 'Femur_BR' })
+  bones.push({ name: 'Cannon_BR', pos: brg.fetlock.clone(), parent: 'Tibia_BR' })
+  bones.push({ name: 'Paw_BR', pos: brg.hoof.clone(), parent: 'Cannon_BR' })
+
+  return { geoms: geoms.filter(Boolean), bones }
+}
+
 function buildQuadruped(p, rng) {
+  if (p.subspecies === 'horse') {
+    if (p.horseWorkflow === 'zbrush') return buildHorseZBrushLike(p, rng)
+    return buildHorseQuadruped(p, rng)
+  }
   const geoms = []
   /** @type {BoneJoint[]} */
   const bones = []
@@ -646,14 +968,16 @@ function buildQuadruped(p, rng) {
   const hs = p.headSize * s
   const tl = p.tailLen * s
 
-  const bodyC = new THREE.Vector3(0, ll + bh * (isHorse ? 0.56 : 0.5), 0)
+  const bodyC = new THREE.Vector3(0, ll + bh * (isHorse ? 0.58 : 0.5), 0)
   /** 躯干：桶状椭球，Z 头尾向长于 X 肩宽，轮廓接近四足躯干 */
-  const bodyW = bl * (isHorse ? 0.46 : 0.52)
-  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * (isHorse ? 0.57 : 0.51), bl * (isHorse ? 0.53 : 0.48)))
+  const bodyW = bl * (isHorse ? 0.44 : 0.52)
+  geoms.push(ellipsoid(bodyC, bodyW * 0.5, bh * (isHorse ? 0.6 : 0.51), bl * (isHorse ? 0.56 : 0.48)))
   if (isHorse) {
-    // 马：肩隆与臀峰，减少“圆桶身”观感
-    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y + bh * 0.2, bl * 0.16), bodyW * 0.44, bh * 0.25, bl * 0.2))
-    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y + bh * 0.12, -bl * 0.18), bodyW * 0.48, bh * 0.23, bl * 0.24))
+    // 马：鬐甲（前高）+ 臀峰，形成真实背线
+    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y + bh * 0.28, bl * 0.2), bodyW * 0.38, bh * 0.23, bl * 0.16))
+    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y + bh * 0.17, -bl * 0.2), bodyW * 0.46, bh * 0.24, bl * 0.26))
+    // Barrel（胸廓/肋筒）下深度
+    geoms.push(ellipsoid(new THREE.Vector3(0, bodyC.y - bh * 0.14, bl * 0.03), bodyW * 0.5, bh * 0.24, bl * 0.4))
   }
 
   const stanceX = Math.min(0.45, Math.max(0.24, Number(p.quadStanceX) || (isHorse ? 0.34 : 0.35)))
@@ -667,10 +991,17 @@ function buildQuadruped(p, rng) {
     new THREE.Vector3(xo, ll, -zo),
   ]
   const paws = hips.map((h, i) => {
-    const fwd = i < 2 ? 0.035 : -0.02
-    return h.clone().add(new THREE.Vector3(rng() * 0.028 - 0.014, -ll * (isHorse ? 0.98 : 0.95), fwd + rng() * 0.02 - 0.01))
+    const fwd = i < 2 ? 0.05 : -0.03
+    const lat = i % 2 === 0 ? -0.01 : 0.01
+    return h.clone().add(
+      new THREE.Vector3(
+        lat + rng() * 0.02 - 0.01,
+        -ll * (isHorse ? 1.0 : 0.95),
+        fwd + rng() * 0.018 - 0.009,
+      ),
+    )
   })
-  const lr = bh * 0.22
+  const lr = bh * (isHorse ? 0.18 : 0.22)
 
   const qDef = Math.min(0.65, Math.max(0.44, Number(p.quadKneeAlongLeg) || 0.52))
   const qF = Number(p.quadKneeAlongLegFront)
@@ -683,11 +1014,11 @@ function buildQuadruped(p, rng) {
     const t = i < 2 ? quadKneeFront : quadKneeHind
     const kneePt = vecLerp(hips[i], paws[i], t)
     if (isHorse) {
-      const fetlockT = i < 2 ? 0.84 : 0.88
+      const fetlockT = i < 2 ? 0.86 : 0.9
       const fetlock = vecLerp(kneePt, paws[i], fetlockT)
-      geoms.push(limbCylinder(hips[i], kneePt, lr * 1.06, lr * 0.72))
-      geoms.push(limbCylinder(kneePt, fetlock, lr * 0.7, lr * 0.42))
-      geoms.push(limbCylinder(fetlock, paws[i], lr * 0.42, lr * 0.3))
+      geoms.push(limbCylinder(hips[i], kneePt, lr * 1.0, lr * 0.64))
+      geoms.push(limbCylinder(kneePt, fetlock, lr * 0.62, lr * 0.34))
+      geoms.push(limbCylinder(fetlock, paws[i], lr * 0.34, lr * 0.24))
     } else {
       geoms.push(limbCylinder(hips[i], kneePt, lr * 1.14, lr * 0.78))
       geoms.push(limbCylinder(kneePt, paws[i], lr * 0.78, lr * 0.48))
@@ -695,9 +1026,9 @@ function buildQuadruped(p, rng) {
   }
 
   /** 蹄 / 掌：贴地扁盒，略沿肢方向前伸，避免圆柱悬空像无蹄 */
-  const hoofH = Math.max(0.018, lr * (isHorse ? 0.34 : 0.4))
-  const hoofLen = lr * (isHorse ? 0.68 : 0.88)
-  const hoofW = lr * (isHorse ? 0.48 : 0.62)
+  const hoofH = Math.max(0.016, lr * (isHorse ? 0.3 : 0.4))
+  const hoofLen = lr * (isHorse ? 0.58 : 0.88)
+  const hoofW = lr * (isHorse ? 0.4 : 0.62)
   for (let i = 0; i < 4; i++) {
     const legDir = new THREE.Vector3().subVectors(paws[i], hips[i])
     legDir.y = 0
@@ -707,20 +1038,27 @@ function buildQuadruped(p, rng) {
     cc.y = hoofH * 0.5
     geoms.push(box(cc, hoofW, hoofH, hoofLen))
     if (isHorse) {
-      geoms.push(cone(cc.clone().add(new THREE.Vector3(0, hoofH * 0.15, hoofLen * 0.1)), hoofW * 0.42, hoofLen * 0.36, new THREE.Vector3(0, -0.08, 1)))
+      geoms.push(
+        cone(
+          cc.clone().add(new THREE.Vector3(0, hoofH * 0.12, hoofLen * 0.12)),
+          hoofW * 0.36,
+          hoofLen * 0.42,
+          new THREE.Vector3(0, -0.1, 1),
+        ),
+      )
     }
   }
 
   const neckFwd = Math.min(0.48, Math.max(0.16, Number(p.quadNeckForward) || (isHorse ? 0.38 : 0.32)))
   const tailZf = Math.min(0.44, Math.max(0.16, Number(p.quadTailZ) || 0.32))
-  const neckBase = new THREE.Vector3(0, ll + bh * (isHorse ? 0.74 : 0.65), bl * neckFwd)
-  const headC = neckBase.clone().add(new THREE.Vector3(0, nk * (isHorse ? 0.22 : 0.3), nk + hs * (isHorse ? 1.18 : 1)))
-  const neckTop = headC.clone().add(new THREE.Vector3(0, -hs * (isHorse ? 0.24 : 0.36), -hs * (isHorse ? 0.08 : 0.2)))
-  const neckMid = vecLerp(neckBase, neckTop, isHorse ? 0.58 : 0.52)
-  geoms.push(limbCylinder(neckBase, neckMid, lr * (isHorse ? 0.92 : 0.86), lr * (isHorse ? 0.66 : 0.64)))
-  geoms.push(limbCylinder(neckMid, neckTop, lr * (isHorse ? 0.66 : 0.64), lr * (isHorse ? 0.42 : 0.46)))
+  const neckBase = new THREE.Vector3(0, ll + bh * (isHorse ? 0.82 : 0.65), bl * neckFwd)
+  const headC = neckBase.clone().add(new THREE.Vector3(0, nk * (isHorse ? 0.16 : 0.3), nk + hs * (isHorse ? 1.38 : 1)))
+  const neckTop = headC.clone().add(new THREE.Vector3(0, -hs * (isHorse ? 0.2 : 0.36), -hs * (isHorse ? 0.02 : 0.2)))
+  const neckMid = vecLerp(neckBase, neckTop, isHorse ? 0.6 : 0.52)
+  geoms.push(limbCylinder(neckBase, neckMid, lr * (isHorse ? 0.98 : 0.86), lr * (isHorse ? 0.64 : 0.64)))
+  geoms.push(limbCylinder(neckMid, neckTop, lr * (isHorse ? 0.64 : 0.64), lr * (isHorse ? 0.36 : 0.46)))
   /** 头：椭球沿头尾向略长，示意颅+吻粗轮廓 */
-  geoms.push(ellipsoid(headC, hs * (isHorse ? 0.43 : 0.5), hs * (isHorse ? 0.82 : 0.9), hs * (isHorse ? 1.45 : 1.1)))
+  geoms.push(ellipsoid(headC, hs * (isHorse ? 0.4 : 0.5), hs * (isHorse ? 0.78 : 0.9), hs * (isHorse ? 1.58 : 1.1)))
   if (isHorse) {
     const muzzle = headC.clone().add(new THREE.Vector3(0, -hs * 0.1, hs * 0.75))
     geoms.push(cone(muzzle, hs * 0.24, hs * 0.7, new THREE.Vector3(0, -0.05, 1)))

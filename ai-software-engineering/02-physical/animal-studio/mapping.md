@@ -2,7 +2,7 @@
 
 | 元素 | 路径 |
 |------|------|
-| 类型列表、子物种表、`subspecies` 预设、`defaultCreatureParams`、`CREATURE_DISPLAY_PARAM_KEYS`、`creatureGeometryFingerprint`、`applySubspeciesPreset`、关节表、`createArmatureFromBones`、`captureBoneRestPose`、`attachSkeletonVisualization`、`SkinnedMesh` 合并、`skeletonJointRadius`、马专用四足形体分支 | `animal-studio/src/creature/proceduralCreature.js` |
+| 类型列表、子物种表、`subspecies` 预设、`defaultCreatureParams`、`CREATURE_DISPLAY_PARAM_KEYS`、`creatureGeometryFingerprint`、`applySubspeciesPreset`、关节表、`createArmatureFromBones`、`captureBoneRestPose`、`attachSkeletonVisualization`、`SkinnedMesh` 合并、`skeletonJointRadius`、马专用四足形体分支、`buildHorseZBrushLike`（骨骼驱动球团） | `animal-studio/src/creature/proceduralCreature.js` |
 | 自动 `skinIndex`/`skinWeight`、骨 DFS 序、**`attachRagdollShapeExtentsFromSkin`**（表皮→`ragdollHalfExtents`） | `animal-studio/src/creature/skinning.js` |
 | 动作预设（含 `horseWalk`）、`sampleCreatureAnimation`（根组）、`applyCreatureJointAnimation` / `resetBonesToRest`（骨骼） | `animal-studio/src/creature/proceduralAnimations.js` |
 | 主框架、左参数 Dock、右信息 Dock（层级+当前选中） | `animal-studio/src/App.vue` |
