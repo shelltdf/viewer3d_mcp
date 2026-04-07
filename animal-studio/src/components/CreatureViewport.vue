@@ -3,7 +3,11 @@ import { onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
-import { buildCreature } from '../creature/proceduralCreature.js'
+import {
+  buildCreature,
+  creatureGeometryFingerprint,
+  setSkeletonVisualizationVisible,
+} from '../creature/proceduralCreature.js'
 import {
   bakeCreatureAnimationClip,
   disposeExportClone,
@@ -15,6 +19,7 @@ import {
   applyCreatureJointAnimation,
   sampleCreatureAnimation,
 } from '../creature/proceduralAnimations.js'
+import { createRagdoll } from '../creature/ragdollPhysics.js'
 import JSZip from 'jszip'
 
 const props = defineProps({
@@ -23,6 +28,9 @@ const props = defineProps({
 
 /** 与 App.vue Dock 共用同一 v-model；根位移 + Armature 逐关节旋转（体表未蒙皮） */
 const animationPreset = defineModel('animationPreset', { type: String, default: 'none' })
+
+/** 物理布娃娃：仅控制是否 **物理解算**（world.step + 刚体→骨骼）；刚体/约束在生成角色时已建立 */
+const ragdollEnabled = defineModel('ragdollEnabled', { type: Boolean, default: false })
 
 const emit = defineEmits(['stats'])
 
@@ -37,6 +45,25 @@ const creatureRootRef = shallowRef(null)
 let raf = 0
 let resizeObserver = null
 const exporting = ref(false)
+
+/** @type {{ dispose: () => void, step: (dt: number) => void, syncBodiesFromBones: () => void, updateWireframes: () => void, wireGroup?: THREE.Group } | null} */
+let ragdollCtx = null
+let lastAnimTime = performance.now()
+
+/** 与 `creatureGeometryFingerprint` 对齐，避免只改「模型/骨骼/物理显示」时误触发整机重建 */
+let lastGeometryFingerprint = ''
+
+/** 模型（SkinnedMesh）、骨骼可视化、物理线框：统一走 `params`（Dock 与右上角面板同源） */
+function applyViewportDisplayLayers() {
+  const root = creatureRootRef.value
+  if (!root) return
+  const p = props.params
+  const body = root.getObjectByName('CreatureBody')
+  if (body) body.visible = p.showCreatureModel !== false
+  const arm = root.getObjectByName('Armature')
+  if (arm) setSkeletonVisualizationVisible(arm, p.showSkeleton !== false)
+  if (ragdollCtx?.wireGroup) ragdollCtx.wireGroup.visible = p.showCreaturePhysics !== false
+}
 
 function disposeCreature(root) {
   if (!root) return
@@ -55,9 +82,26 @@ function disposeCreature(root) {
   mats.forEach((m) => m.dispose?.())
 }
 
+function disposeRagdollPhysics() {
+  ragdollCtx?.dispose()
+  ragdollCtx = null
+}
+
+/** 与 `buildCreature` 配套：建立 cannon World、地面、各骨刚体与约束及调试线框（不决定是否步进解算） */
+function rebuildRagdollPhysics() {
+  disposeRagdollPhysics()
+  const scene = sceneRef.value
+  const root = creatureRootRef.value
+  if (!scene || !root) return
+  ragdollCtx = createRagdoll(scene, root)
+  if (!ragdollCtx) ragdollEnabled.value = false
+  applyViewportDisplayLayers()
+}
+
 function rebuildCreature() {
   const scene = sceneRef.value
   if (!scene) return
+  disposeRagdollPhysics()
   const old = creatureRootRef.value
   if (old) {
     scene.remove(old)
@@ -68,6 +112,9 @@ function rebuildCreature() {
   scene.add(group)
   creatureRootRef.value = group
   emit('stats', stats)
+  rebuildRagdollPhysics()
+  lastGeometryFingerprint = creatureGeometryFingerprint(props.params)
+  applyViewportDisplayLayers()
 }
 
 function fitCameraToCreature() {
@@ -96,17 +143,33 @@ function animate() {
   const camera = cameraRef.value
   const controls = controlsRef.value
   if (!renderer || !scene || !camera) return
+  const now = performance.now()
+  const dt = Math.min(0.05, (now - lastAnimTime) / 1000)
+  lastAnimTime = now
   const root = creatureRootRef.value
   if (root) {
-    const t = performance.now() * 0.001
+    const t = now * 0.001
     const preset = animationPreset.value || 'none'
     const kind = props.params.kind || 'quadruped'
     const pose = sampleCreatureAnimation(preset, t, kind)
     const gy = Number(root.userData?.groundOffsetY) || 0
-    root.position.set(pose.px, pose.py + gy, pose.pz)
-    root.rotation.set(pose.rx, pose.ry, pose.rz, 'XYZ')
-    const armature = root.getObjectByName('Armature')
-    applyCreatureJointAnimation(armature, preset, t, kind)
+    if (ragdollCtx) {
+      if (ragdollEnabled.value) {
+        ragdollCtx.step(dt)
+      } else {
+        root.position.set(pose.px, pose.py + gy, pose.pz)
+        root.rotation.set(pose.rx, pose.ry, pose.rz, 'XYZ')
+        const armature = root.getObjectByName('Armature')
+        applyCreatureJointAnimation(armature, preset, t, kind)
+        ragdollCtx.syncBodiesFromBones()
+        ragdollCtx.updateWireframes()
+      }
+    } else {
+      root.position.set(pose.px, pose.py + gy, pose.pz)
+      root.rotation.set(pose.rx, pose.ry, pose.rz, 'XYZ')
+      const armature = root.getObjectByName('Armature')
+      applyCreatureJointAnimation(armature, preset, t, kind)
+    }
   }
   controls?.update()
   renderer.render(scene, camera)
@@ -277,6 +340,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   controlsRef.value?.dispose()
   controlsRef.value = null
+  disposeRagdollPhysics()
   disposeCreature(creatureRootRef.value)
   creatureRootRef.value = null
   sceneRef.value?.clear()
@@ -289,10 +353,19 @@ onUnmounted(() => {
 watch(
   () => props.params,
   () => {
-    if (sceneRef.value) rebuildCreature()
+    if (!sceneRef.value) return
+    const fp = creatureGeometryFingerprint(props.params)
+    if (fp !== lastGeometryFingerprint) rebuildCreature()
+    else applyViewportDisplayLayers()
   },
   { deep: true },
 )
+
+watch(ragdollEnabled, (on) => {
+  if (!sceneRef.value || !creatureRootRef.value || !ragdollCtx) return
+  if (on) ragdollCtx.syncBodiesFromBones()
+  applyViewportDisplayLayers()
+})
 
 </script>
 
@@ -305,6 +378,32 @@ watch(
         <select v-model="animationPreset" class="select anim-select" title="根位移 + 骨骼旋转；SkinnedMesh 随骨形变（自动权重示意）">
           <option v-for="a in CREATURE_ANIMATIONS" :key="a.id" :value="a.id">{{ a.label }}</option>
         </select>
+      </label>
+    </div>
+    <div
+      class="display-panel"
+      @pointerdown.stop
+      title="与左侧 Dock「外观」同源：模型 / 骨骼 / 物理为同一套角色图层"
+    >
+      <div class="display-panel-title">显示</div>
+      <label class="display-check">
+        <input v-model="params.showCreatureModel" type="checkbox" />
+        <span>模型显示</span>
+      </label>
+      <label class="display-check">
+        <input v-model="params.showSkeleton" type="checkbox" />
+        <span>骨骼显示</span>
+      </label>
+      <label
+        class="display-check"
+        :title="
+          ragdollEnabled
+            ? '碰撞体线框（与物理解算同步）'
+            : '刚体与骨骼同尺度基准；此项控制线框，关闭解算时线框随骨骼更新'
+        "
+      >
+        <input v-model="params.showCreaturePhysics" type="checkbox" />
+        <span>物理显示</span>
       </label>
     </div>
     <div class="hud">拖拽旋转 · 滚轮缩放 · 右平移</div>
@@ -367,5 +466,46 @@ watch(
   border: 1px solid #3d4a5f;
   background: #1e2530;
   color: #e8ecf2;
+}
+
+.display-panel {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  z-index: 20;
+  min-width: 7.5rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(22, 27, 36, 0.92);
+  border: 1px solid #2f3a4d;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.display-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7788;
+  margin: 0 0 8px;
+}
+
+.display-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #c8d0dc;
+  cursor: pointer;
+  user-select: none;
+}
+
+.display-check:last-of-type {
+  margin-bottom: 0;
+}
+
+.display-check input {
+  flex-shrink: 0;
 }
 </style>

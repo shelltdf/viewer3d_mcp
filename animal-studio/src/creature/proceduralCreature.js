@@ -1,6 +1,10 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { applySkinToGeometry, collectBonesDepthFirst } from './skinning.js'
+import {
+  applySkinToGeometry,
+  attachRagdollShapeExtentsFromSkin,
+  collectBonesDepthFirst,
+} from './skinning.js'
 
 const _Y = new THREE.Vector3(0, 1, 0)
 
@@ -331,6 +335,17 @@ function attachSkeletonVisualization(armature, jointRadius) {
   })
 }
 
+/**
+ * 显示/隐藏 `attachSkeletonVisualization` 生成的关节球与骨线（不改变层级，仅改 `visible`）。
+ * @param {THREE.Object3D} armature
+ * @param {boolean} visible
+ */
+export function setSkeletonVisualizationVisible(armature, visible) {
+  armature.traverse((obj) => {
+    if (obj.name.startsWith('JointViz_') || obj.name.startsWith('BoneLine_')) obj.visible = visible
+  })
+}
+
 /** 记录静息局部 transform，供每帧复位后叠加关节动画（导出烘焙等复用） */
 export function captureBoneRestPose(armature) {
   armature.traverse((obj) => {
@@ -370,7 +385,7 @@ function createArmatureFromBones(bones) {
 }
 
 /**
- * 将当前 `params.subspecies` 的比例写入 params（不改 seed / scale / hue / showSkeleton 等）。
+ * 将当前 `params.subspecies` 的比例写入 params（不改 seed / scale / hue / 图层类 `show*` 等）。
  * @param {Record<string, unknown>} params
  */
 export function applySubspeciesPreset(params) {
@@ -397,6 +412,10 @@ export function defaultCreatureParams(kind) {
     saturation: 0.45,
     lightness: 0.48,
     showSkeleton: true,
+    /** SkinnedMesh；与视口 / Dock 共用 */
+    showCreatureModel: true,
+    /** 布娃娃碰撞调试线框；与视口 / Dock 共用 */
+    showCreaturePhysics: true,
   }
   const extras = {
     biped: {
@@ -436,6 +455,23 @@ export function defaultCreatureParams(kind) {
   merged.subspecies = typeof firstSub === 'string' ? firstSub : 'man'
   applySubspeciesPreset(merged)
   return merged
+}
+
+/** 仅视口图层，不改变几何；`CreatureViewport` 用其区分「重建网格」与「只更新显示」 */
+export const CREATURE_DISPLAY_PARAM_KEYS = ['showSkeleton', 'showCreatureModel', 'showCreaturePhysics']
+
+/**
+ * 去掉图层字段后的快照，用于判断是否需要 `buildCreature`。
+ * @param {Record<string, unknown>} params
+ */
+export function creatureGeometryFingerprint(params) {
+  const o = { ...params }
+  for (const k of CREATURE_DISPLAY_PARAM_KEYS) delete o[k]
+  try {
+    return JSON.stringify(o)
+  } catch {
+    return String(Math.random())
+  }
 }
 
 /**
@@ -986,6 +1022,8 @@ export function buildCreature(params) {
   const group = new THREE.Group()
   group.name = 'ProceduralCreature'
   const scale = Number(params.scale) || 1
+  const jointRadius = Math.max(0.01, 0.022 * scale)
+  group.userData.skeletonJointRadius = jointRadius
   const armature = createArmatureFromBones(bones)
   group.add(armature)
   captureBoneRestPose(armature)
@@ -1023,12 +1061,12 @@ export function buildCreature(params) {
   skinnedMesh.receiveShadow = true
   skinnedMesh.normalizeSkinWeights = true
   skinnedMesh.bind(new THREE.Skeleton(orderedBones))
+  skinnedMesh.visible = params.showCreatureModel !== false
   group.add(skinnedMesh)
 
-  const showSk = params.showSkeleton !== false
-  if (showSk && bones.length) {
-    const jr = Math.max(0.01, 0.022 * scale)
-    attachSkeletonVisualization(armature, jr)
+  if (bones.length) {
+    attachSkeletonVisualization(armature, jointRadius)
+    setSkeletonVisualizationVisible(armature, params.showSkeleton !== false)
   }
 
   /** 世界 y=0 为地平；整体上移使 AABB 底面略高于地面。基准记入 userData，供动画/烘焙叠加 px,py,pz。 */
@@ -1039,6 +1077,9 @@ export function buildCreature(params) {
     group.position.y += GROUND_PAD - bbox.min.y
   }
   group.userData.groundOffsetY = group.position.y
+
+  group.updateMatrixWorld(true)
+  attachRagdollShapeExtentsFromSkin(skinnedMesh, orderedBones, armature)
 
   return {
     group,

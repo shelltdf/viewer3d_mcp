@@ -41,6 +41,9 @@ const subspeciesOptions = computed(() => CREATURE_SUBSPECIES[params.kind] ?? [])
 /** 与 params 分离，避免深度 watch 误判；由视口每帧对整模根节点应用 */
 const animationPreset = ref('none')
 
+/** 是否启动物理解算（刚体在生成角色时已创建；与视口 v-model 同步） */
+const ragdollEnabled = ref(false)
+
 const dockOpen = ref(readLsBool(LS_OPEN, true))
 const dockWidth = ref(readLsNum(LS_W, 300, 220, 480))
 
@@ -154,6 +157,18 @@ function onStats(s) {
           </div>
         </details>
         <div class="menu-fill" />
+        <button
+          type="button"
+          class="menu-btn"
+          :class="{ 'menu-btn-on': ragdollEnabled }"
+          :title="
+            (ragdollEnabled ? '停止' : '启动') +
+            '物理解算（刚体已在生成时建立；关闭时刚体仍随骨骼运动，可与「物理显示」看线框）'
+          "
+          @click="ragdollEnabled = !ragdollEnabled"
+        >
+          物理布娃娃
+        </button>
         <button type="button" class="menu-btn" title="适配视图（无全局快捷键）" @click="fitView">适配视图</button>
       </nav>
     </header>
@@ -224,9 +239,20 @@ function onStats(s) {
               <span>明度 {{ params.lightness.toFixed(2) }}</span>
               <input v-model.number="params.lightness" type="range" min="0.15" max="0.85" step="0.02" />
             </label>
+            <p class="stat-line hint" style="margin-top: 6px">
+              角色显示（与视口右上角同源）：蒙皮模型、骨骼辅助体、物理碰撞线框。
+            </p>
+            <label class="field menu-check">
+              <input v-model="params.showCreatureModel" type="checkbox" />
+              <span>显示模型（SkinnedMesh）</span>
+            </label>
             <label class="field menu-check">
               <input v-model="params.showSkeleton" type="checkbox" />
-              <span>显示骨骼（连线与关节）</span>
+              <span>显示骨骼（关节球与骨线）</span>
+            </label>
+            <label class="field menu-check">
+              <input v-model="params.showCreaturePhysics" type="checkbox" />
+              <span>显示物理（布娃娃碰撞线框）</span>
             </label>
 
             <template v-if="params.kind === 'biped'">
@@ -310,6 +336,7 @@ function onStats(s) {
         <CreatureViewport
           ref="viewportRef"
           v-model:animation-preset="animationPreset"
+          v-model:ragdoll-enabled="ragdollEnabled"
           class="view"
           :params="params"
           @stats="onStats"
@@ -417,6 +444,12 @@ function onStats(s) {
 
 .menu-btn:hover {
   background: #323a4d;
+}
+
+.menu-btn-on {
+  background: #2d4a6e;
+  border-color: #4a7ab0;
+  color: #e8eef5;
 }
 
 .workspace {
